@@ -1,9 +1,11 @@
-name: Terraform Deploy
+name: Terraform Infrastructure
+
+run-name: "Terraform ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply' && '🚀 APPLY' || '📋 PLAN' }} - ${{ github.actor }}"
 
 on:
   push:
     branches:
-      - main
+      - master
     paths:
       - 'terraform/**'
   workflow_dispatch:
@@ -26,7 +28,7 @@ env:
 
 jobs:
   bootstrap:
-    name: Bootstrap
+    name: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply' && '🚀 Bootstrap - APPLY' || '📋 Bootstrap - PLAN' }}"
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,7 +56,7 @@ jobs:
         run: terraform apply -auto-approve
 
   deploy:
-    name: Deploy
+    name: "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply' && '🚀 Infrastructure - APPLY' || '📋 Infrastructure - PLAN' }}"
     needs: bootstrap
     runs-on: ubuntu-latest
     defaults:
