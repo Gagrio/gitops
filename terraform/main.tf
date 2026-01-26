@@ -55,3 +55,15 @@ resource "google_container_node_pool" "primary" {
     auto_upgrade = true
   }
 }
+
+# Kubernetes Namespaces
+resource "kubernetes_namespace" "monitoring" {
+  metadata {
+    name = "monitoring"
+    labels = {
+      environment = "showcase"
+    }
+  }
+
+  depends_on = [google_container_node_pool.primary]
+}
