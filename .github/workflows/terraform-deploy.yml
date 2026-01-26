@@ -70,6 +70,21 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ensure GCS bucket exists
+        run: |
+          BUCKET_NAME="${{ secrets.GCP_PROJECT_ID }}-tfstate"
+          if ! gcloud storage buckets describe gs://${BUCKET_NAME} &>/dev/null; then
+            echo "Creating bucket ${BUCKET_NAME}..."
+            gcloud storage buckets create gs://${BUCKET_NAME} \
+              --location=${{ secrets.GCP_REGION }} \
+              --uniform-bucket-level-access
+          else
+            echo "Bucket ${BUCKET_NAME} already exists"
+          fi
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
