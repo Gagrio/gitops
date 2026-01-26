@@ -82,10 +82,10 @@ In your repository → **Settings** → **Secrets and variables** → **Actions*
 
 | Component | Created By |
 |-----------|------------|
-| GCP APIs | Terraform (bootstrap) |
-| GCS Bucket | Terraform (bootstrap) |
-| GKE Cluster | Terraform (deploy) |
-| Flux | Terraform (deploy) |
+| GCP APIs | Terraform (bootstrap job) |
+| GCS Bucket | gcloud (deploy job) |
+| GKE Cluster | Terraform (deploy job) |
+| Flux | Terraform (deploy job) |
 | Prometheus | Flux (GitOps) |
 | Grafana | Flux (GitOps) |
 
@@ -137,7 +137,7 @@ Login: `admin` / `gitops-showcase`
 │   ├── terraform-deploy.yml    # Bootstrap + Deploy
 │   └── terraform-destroy.yml   # Destroy
 ├── terraform/
-│   ├── bootstrap/              # APIs, GCS bucket
+│   ├── bootstrap/              # APIs only
 │   └── *.tf                    # GKE, Flux
 ├── kubernetes/apps/
 │   ├── prometheus/
