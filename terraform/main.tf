@@ -67,3 +67,9 @@ resource "kubernetes_namespace" "monitoring" {
 
   depends_on = [google_container_node_pool.primary]
 }
+
+# Wait for namespace to be fully propagated before Flux bootstrap
+resource "time_sleep" "wait_for_namespaces" {
+  depends_on      = [kubernetes_namespace.monitoring]
+  create_duration = "10s"
+}

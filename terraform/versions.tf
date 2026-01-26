@@ -22,6 +22,10 @@ terraform {
       source  = "integrations/github"
       version = "~> 6.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.10"
+    }
   }
 
   # Backend configuration - bucket name passed via CLI during init

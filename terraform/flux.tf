@@ -1,9 +1,6 @@
 # Flux bootstrap
 resource "flux_bootstrap_git" "this" {
-  depends_on = [
-    google_container_node_pool.primary,
-    kubernetes_namespace.monitoring
-  ]
+  depends_on = [time_sleep.wait_for_namespaces]
 
   embedded_manifests = true
   path               = var.flux_target_path
