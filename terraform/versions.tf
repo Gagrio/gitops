@@ -57,7 +57,8 @@ provider "flux" {
     cluster_ca_certificate = base64decode(google_container_cluster.main.master_auth[0].cluster_ca_certificate)
   }
   git = {
-    url = "https://github.com/${var.github_owner}/${var.github_repository}.git"
+    url    = "https://github.com/${var.github_owner}/${var.github_repository}.git"
+    branch = "master"
     http = {
       username = "git"
       password = var.github_token

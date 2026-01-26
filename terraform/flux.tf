@@ -4,7 +4,6 @@ resource "flux_bootstrap_git" "this" {
 
   embedded_manifests = true
   path               = var.flux_target_path
-  branch             = "master"
 
   components_extra = [
     "image-reflector-controller",
