@@ -1,0 +1,19 @@
+apiVersion: v2
+name: hello-gitops
+description: A simple Helm chart to demonstrate GitOps with Flux
+type: application
+
+# Chart version - bump this when you change the chart
+version: 0.1.0
+
+# Application version - the version of the app being deployed
+appVersion: "1.0.0"
+
+keywords:
+  - demo
+  - gitops
+  - learning
+
+maintainers:
+  - name: GitOps Learner
+    email: learner@example.com

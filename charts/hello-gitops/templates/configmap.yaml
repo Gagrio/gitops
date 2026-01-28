@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hello-gitops.fullname" . }}
+  labels:
+    {{- include "hello-gitops.labels" . | nindent 4 }}
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Hello GitOps</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                text-align: center;
+                padding: 40px;
+                background: rgba(255,255,255,0.1);
+                border-radius: 10px;
+                backdrop-filter: blur(10px);
+            }
+            h1 { font-size: 2.5em; margin-bottom: 10px; }
+            p { font-size: 1.2em; opacity: 0.9; }
+            .info { margin-top: 20px; font-size: 0.9em; opacity: 0.7; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{{ .Values.message }}</h1>
+            <p>Deployed via Flux GitOps</p>
+            <div class="info">
+                <p>Chart: {{ .Chart.Name }} v{{ .Chart.Version }}</p>
+                <p>App Version: {{ .Chart.AppVersion }}</p>
+            </div>
+        </div>
+    </body>
+    </html>

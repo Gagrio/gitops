@@ -740,11 +740,884 @@ patchesStrategicMerge:
 
 ### Helm
 
-Helm is a package manager for Kubernetes. Charts are packages of pre-configured resources.
+Helm is the package manager for Kubernetes. It uses **charts** (packages of pre-configured Kubernetes resources) to deploy applications.
+
+#### Key Concepts
+
+| Term | Description |
+|------|-------------|
+| **Chart** | A package containing Kubernetes resource templates and default values |
+| **Release** | An instance of a chart running in a cluster |
+| **Repository** | A collection of charts (like npm registry or Docker Hub) |
+| **Values** | Configuration parameters that customize a chart |
+| **Templates** | Kubernetes manifests with Go template placeholders |
+
+---
+
+#### Helm Chart Structure
+
+Every Helm chart follows this structure:
+
+```
+mychart/
+├── Chart.yaml          # Chart metadata (name, version, description)
+├── values.yaml         # Default configuration values
+├── charts/             # Dependencies (sub-charts)
+├── templates/          # Kubernetes manifest templates
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── configmap.yaml
+│   ├── _helpers.tpl    # Reusable template snippets
+│   └── NOTES.txt       # Post-install instructions
+├── .helmignore         # Files to ignore when packaging
+└── README.md           # Documentation
+```
+
+---
+
+#### Chart.yaml Explained
+
+**File**: `charts/hello-gitops/Chart.yaml` (from your repo)
+
+```yaml
+apiVersion: v2                    # Helm 3 uses apiVersion v2
+name: hello-gitops                # Chart name (used in templates)
+description: A simple Helm chart to demonstrate GitOps with Flux
+type: application                 # "application" or "library"
+
+# Chart version - bump this when you change the chart
+version: 0.1.0
+
+# Application version - the version of the app being deployed
+appVersion: "1.0.0"
+
+keywords:
+  - demo
+  - gitops
+  - learning
+
+maintainers:
+  - name: GitOps Learner
+    email: learner@example.com
+```
+
+**Key fields**:
+- `version`: Chart version (SemVer). Bump when chart changes.
+- `appVersion`: Version of the application inside. Informational only.
+- `type`: `application` (deployable) or `library` (shared templates only)
+
+---
+
+#### values.yaml Explained
+
+Default values that users can override. **File**: `charts/hello-gitops/values.yaml`
+
+```yaml
+# Number of pod replicas
+replicaCount: 1
+
+# Container image configuration
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+# Custom message displayed on the page
+message: "Hello from GitOps!"
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+```
+
+**Best practices**:
+- Use sensible defaults that work out of the box
+- Group related values (image.*, service.*, resources.*)
+- Document with comments
+- Don't include secrets (use external secrets management)
+
+---
+
+#### Helm Templating Syntax (Go Templates)
+
+Helm uses Go's `text/template` package with additional functions.
+
+##### Basic Syntax
+
+```yaml
+# Access values from values.yaml
+replicas: {{ .Values.replicaCount }}
+
+# Access chart metadata
+name: {{ .Chart.Name }}
+version: {{ .Chart.Version }}
+
+# Access release information
+release: {{ .Release.Name }}
+namespace: {{ .Release.Namespace }}
+
+# String with quotes
+image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+```
+
+##### Conditionals
+
+```yaml
+# if/else
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+# ... ingress spec
+{{- end }}
+
+# if/else with comparison
+{{- if eq .Values.service.type "LoadBalancer" }}
+  # LoadBalancer specific config
+{{- else }}
+  # Default config
+{{- end }}
+```
+
+##### Loops
+
+```yaml
+# Range over a list
+{{- range .Values.env }}
+- name: {{ .name }}
+  value: {{ .value | quote }}
+{{- end }}
+
+# Range with index
+{{- range $index, $host := .Values.ingress.hosts }}
+- host: {{ $host }}
+{{- end }}
+```
+
+##### Built-in Functions
+
+```yaml
+# quote - wrap in quotes
+value: {{ .Values.message | quote }}
+# Result: value: "Hello from GitOps!"
+
+# default - fallback value
+image: {{ .Values.image.tag | default "latest" }}
+
+# toYaml - convert to YAML (with nindent for indentation)
+resources:
+  {{- toYaml .Values.resources | nindent 2 }}
+
+# include - call a named template
+labels:
+  {{- include "hello-gitops.labels" . | nindent 4 }}
+
+# required - fail if value is empty
+name: {{ required "A name is required" .Values.name }}
+
+# trim, lower, upper, title
+name: {{ .Values.name | lower | trim }}
+```
+
+##### Whitespace Control
+
+```yaml
+# {{- removes whitespace before
+# -}} removes whitespace after
+
+{{- if .Values.enabled }}
+key: value
+{{- end }}
+```
+
+---
+
+#### _helpers.tpl - Reusable Templates
+
+**File**: `charts/hello-gitops/templates/_helpers.tpl`
+
+```yaml
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "hello-gitops.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+Truncate at 63 chars (Kubernetes name limit).
+*/}}
+{{- define "hello-gitops.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Common labels - used on all resources
+*/}}
+{{- define "hello-gitops.labels" -}}
+helm.sh/chart: {{ include "hello-gitops.chart" . }}
+{{ include "hello-gitops.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels - used for pod selection
+*/}}
+{{- define "hello-gitops.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "hello-gitops.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+```
+
+**Why use helpers?**
+- **DRY**: Define once, use everywhere
+- **Consistency**: Same labels/names across all resources
+- **Kubernetes compliance**: Handle name length limits (63 chars)
+
+---
+
+#### Template Example: Deployment
+
+**File**: `charts/hello-gitops/templates/deployment.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hello-gitops.fullname" . }}
+  labels:
+    {{- include "hello-gitops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hello-gitops.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hello-gitops.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+```
+
+**Template flow**:
+1. `include "hello-gitops.fullname"` → Calls helper, returns `release-name-hello-gitops`
+2. `nindent 4` → Adds newline + 4 spaces indent
+3. `.Values.replicaCount` → Gets value from values.yaml (or override)
+4. `toYaml .Values.resources` → Converts YAML object to string
+
+---
+
+#### Helm Hooks (Lifecycle Events)
+
+Hooks let you run actions at specific points in a release lifecycle.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-db-migrate
+  annotations:
+    # This is a hook
+    "helm.sh/hook": pre-upgrade,pre-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: myapp:migrate
+          command: ["./migrate.sh"]
+      restartPolicy: Never
+```
+
+**Available hooks**:
+| Hook | When it runs |
+|------|--------------|
+| `pre-install` | Before any resources are installed |
+| `post-install` | After all resources are installed |
+| `pre-upgrade` | Before upgrade begins |
+| `post-upgrade` | After upgrade completes |
+| `pre-delete` | Before deletion begins |
+| `post-delete` | After deletion completes |
+| `pre-rollback` | Before rollback begins |
+| `post-rollback` | After rollback completes |
+
+**Common uses**:
+- Database migrations (pre-upgrade)
+- Backup before upgrade (pre-upgrade)
+- Cache warming (post-install)
+- Cleanup jobs (post-delete)
+
+---
+
+#### Creating Your Own Chart
+
+```bash
+# Create new chart from template
+helm create mychart
+
+# This creates:
+mychart/
+├── Chart.yaml
+├── values.yaml
+├── charts/
+├── templates/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── ingress.yaml
+│   ├── hpa.yaml
+│   ├── serviceaccount.yaml
+│   ├── _helpers.tpl
+│   ├── NOTES.txt
+│   └── tests/
+│       └── test-connection.yaml
+└── .helmignore
+
+# Lint the chart (check for errors)
+helm lint mychart
+
+# Template locally (see rendered output)
+helm template myrelease mychart --values custom-values.yaml
+
+# Package for distribution
+helm package mychart
+# Creates: mychart-0.1.0.tgz
+
+# Install locally
+helm install myrelease mychart
+
+# Install with custom values
+helm install myrelease mychart --set replicaCount=3
+
+# Install with values file
+helm install myrelease mychart -f production-values.yaml
+```
+
+---
+
+## Tutorial: Creating and Deploying a Custom Helm Chart with Flux
+
+This tutorial walks you through creating your own Helm chart and deploying it via Flux GitOps. By the end, you'll understand the complete process.
+
+### Why Create Custom Charts?
+
+| Use Case | Solution |
+|----------|----------|
+| Deploy third-party apps (Prometheus, Grafana) | Use **remote charts** from HelmRepository |
+| Deploy your own applications | Create **local charts** in your Git repo |
+| Customize third-party apps heavily | Fork chart or create wrapper chart |
+
+**Your repo now has both**:
+- Remote charts: Prometheus, Grafana (from HelmRepository)
+- Local chart: hello-gitops (from GitRepository)
+
+---
+
+### Step 1: Create the Chart Directory Structure
+
+```bash
+# Create the chart directory
+mkdir -p charts/hello-gitops/templates
+
+# You'll create these files:
+charts/hello-gitops/
+├── Chart.yaml          # REQUIRED: Chart metadata
+├── values.yaml         # REQUIRED: Default values
+└── templates/          # REQUIRED: Kubernetes templates
+    ├── _helpers.tpl    # Reusable template snippets
+    ├── deployment.yaml # Your app deployment
+    ├── service.yaml    # Service to expose the app
+    ├── configmap.yaml  # Configuration data
+    └── NOTES.txt       # Post-install message
+```
+
+---
+
+### Step 2: Create Chart.yaml (Chart Identity)
+
+**File**: `charts/hello-gitops/Chart.yaml`
+
+```yaml
+apiVersion: v2                    # v2 = Helm 3
+name: hello-gitops                # Chart name (referenced in templates as .Chart.Name)
+description: A simple Helm chart to demonstrate GitOps with Flux
+type: application                 # "application" = deployable, "library" = shared code only
+
+version: 0.1.0                    # CHART version - bump when chart changes
+appVersion: "1.0.0"               # APP version - what version of your app this deploys
+```
+
+**Key points**:
+- `name`: Used as default for resource names
+- `version`: Semantic versioning. Bump this when you change the chart.
+- `appVersion`: Informational - shows in `helm list`
+
+---
+
+### Step 3: Create values.yaml (Configuration)
+
+**File**: `charts/hello-gitops/values.yaml`
+
+```yaml
+# These are DEFAULTS that users can override
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+message: "Hello from GitOps!"     # Custom value used in configmap
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+```
+
+**How it works**:
+- Templates access these via `{{ .Values.replicaCount }}`, `{{ .Values.image.repository }}`, etc.
+- Users override by:
+  - `helm install --set replicaCount=3`
+  - `helm install -f custom-values.yaml`
+  - In Flux: the `values:` section of HelmRelease
+
+---
+
+### Step 4: Create _helpers.tpl (Reusable Templates)
+
+**File**: `charts/hello-gitops/templates/_helpers.tpl`
+
+```yaml
+{{/*
+Generate the full name for resources.
+If release is "myrelease" and chart is "hello-gitops", returns "myrelease-hello-gitops"
+Truncated to 63 chars (Kubernetes name limit)
+*/}}
+{{- define "hello-gitops.fullname" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Generate standard labels for all resources.
+Ensures consistent labeling across deployment, service, etc.
+*/}}
+{{- define "hello-gitops.labels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+app.kubernetes.io/name: {{ .Chart.Name }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels - subset used for pod selection.
+Must match between Deployment.spec.selector and Pod labels.
+*/}}
+{{- define "hello-gitops.selectorLabels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+```
+
+**Why this matters**:
+- `define` creates a named template
+- `include` calls it from other templates
+- Ensures ALL resources have consistent names and labels
+- Handles Kubernetes 63-char name limit automatically
+
+---
+
+### Step 5: Create the Templates
+
+#### deployment.yaml
+
+**File**: `charts/hello-gitops/templates/deployment.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hello-gitops.fullname" . }}       # Uses helper
+  labels:
+    {{- include "hello-gitops.labels" . | nindent 4 }} # Uses helper
+spec:
+  replicas: {{ .Values.replicaCount }}                 # From values.yaml
+  selector:
+    matchLabels:
+      {{- include "hello-gitops.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hello-gitops.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}                      # From Chart.yaml
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }} # Converts YAML object
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+      volumes:
+        - name: html
+          configMap:
+            name: {{ include "hello-gitops.fullname" . }}
+```
+
+**Template syntax explained**:
+- `{{ include "hello-gitops.fullname" . }}` - Call helper, returns e.g. "release-hello-gitops"
+- `| nindent 4` - Pipe result, add newline + 4 spaces (YAML indentation)
+- `{{- ... }}` - The `-` removes whitespace before the tag (cleaner YAML)
+- `toYaml .Values.resources` - Converts the resources object to YAML string
+
+#### service.yaml
+
+**File**: `charts/hello-gitops/templates/service.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hello-gitops.fullname" . }}
+  labels:
+    {{- include "hello-gitops.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}      # ClusterIP, LoadBalancer, etc.
+  ports:
+    - port: {{ .Values.service.port }}  # 80
+      targetPort: http                   # References container port name
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hello-gitops.selectorLabels" . | nindent 4 }}
+```
+
+#### configmap.yaml
+
+**File**: `charts/hello-gitops/templates/configmap.yaml`
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hello-gitops.fullname" . }}
+  labels:
+    {{- include "hello-gitops.labels" . | nindent 4 }}
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>Hello GitOps</title></head>
+    <body>
+        <h1>{{ .Values.message }}</h1>        # ← Your custom message!
+        <p>Chart: {{ .Chart.Name }} v{{ .Chart.Version }}</p>
+    </body>
+    </html>
+```
+
+**This is the magic**: The HTML contains `{{ .Values.message }}`. When you change the message in your HelmRelease and push to Git, Flux re-renders the template with the new value.
+
+---
+
+### Step 6: Test the Chart Locally (Optional)
+
+Before deploying via Flux, you can test locally:
+
+```bash
+# Check for syntax errors
+helm lint charts/hello-gitops/
+
+# See the rendered output (what Kubernetes will receive)
+helm template myrelease charts/hello-gitops/
+
+# See with custom values
+helm template myrelease charts/hello-gitops/ --set message="Testing!"
+
+# Actually install (if you have kubectl access)
+helm install myrelease charts/hello-gitops/ --dry-run
+```
+
+---
+
+### Step 7: Create the Flux HelmRelease
+
+Now tell Flux to deploy this chart. Create the Flux resources:
+
+**Directory**: `kubernetes/apps/hello-gitops/`
+
+**File**: `kubernetes/apps/hello-gitops/helmrelease.yaml`
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hello-gitops
+  namespace: default              # Where to deploy the app
+spec:
+  interval: 5m                    # How often to check for drift
+  chart:
+    spec:
+      chart: ./charts/hello-gitops   # PATH to chart (not name!)
+      sourceRef:
+        kind: GitRepository          # ← KEY: Use Git, not HelmRepository
+        name: flux-system            # The GitRepository Flux already uses
+        namespace: flux-system
+      interval: 1m
+  values:                            # Override default values
+    replicaCount: 1
+    message: "Hello from GitOps! Deployed by Flux."
+    service:
+      type: ClusterIP
+```
+
+**File**: `kubernetes/apps/hello-gitops/kustomization.yaml`
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+```
+
+---
+
+### Step 8: Register with Flux
+
+Add hello-gitops to the apps kustomization:
+
+**File**: `kubernetes/apps/kustomization.yaml`
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - prometheus
+  - grafana
+  - hello-gitops    # ← Add this line
+```
+
+---
+
+### Step 9: Commit and Push
+
+```bash
+git add charts/ kubernetes/apps/hello-gitops/ kubernetes/apps/kustomization.yaml
+git commit -m "Add hello-gitops custom Helm chart"
+git push
+```
+
+---
+
+### How Flux Deploys Your Local Chart
+
+Here's the complete flow:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. GIT PUSH                                                                 │
+│    You commit charts/hello-gitops/ and kubernetes/apps/hello-gitops/        │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 2. FLUX SOURCE CONTROLLER (polls every 1 minute)                            │
+│    GitRepository "flux-system" detects new commit                           │
+│    Downloads entire repo including charts/ directory                        │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 3. FLUX KUSTOMIZE CONTROLLER                                                │
+│    Reads kubernetes/kustomization.yaml                                      │
+│    → Follows to kubernetes/apps/kustomization.yaml                          │
+│    → Finds kubernetes/apps/hello-gitops/helmrelease.yaml                    │
+│    → Applies the HelmRelease resource to cluster                            │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 4. FLUX HELM CONTROLLER                                                     │
+│    Sees new HelmRelease "hello-gitops"                                      │
+│    Reads chart.spec.chart: "./charts/hello-gitops"                          │
+│    Reads chart.spec.sourceRef: GitRepository "flux-system"                  │
+│    Fetches chart from Git repo (not HelmRepository!)                        │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 5. HELM RENDERING                                                           │
+│    Helm Controller renders templates:                                       │
+│    - Reads charts/hello-gitops/values.yaml (defaults)                       │
+│    - Merges with HelmRelease.spec.values (overrides)                        │
+│    - Processes templates: {{ .Values.message }} → "Hello from GitOps!..."   │
+│    - Generates final Kubernetes manifests                                   │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 6. KUBERNETES APPLIES                                                       │
+│    Creates in "default" namespace:                                          │
+│    - ConfigMap (with rendered HTML)                                         │
+│    - Deployment (nginx mounting the ConfigMap)                              │
+│    - Service (ClusterIP exposing port 80)                                   │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 7. APP RUNNING                                                              │
+│    nginx pod serves your custom HTML page                                   │
+│    Access via: kubectl port-forward svc/hello-gitops 8080:80                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Making Changes (The GitOps Way)
+
+#### Change 1: Update the message (values change)
+
+```bash
+# Edit the HelmRelease values
+vim kubernetes/apps/hello-gitops/helmrelease.yaml
+```
+
+Change:
+```yaml
+  values:
+    message: "GitOps is awesome!"   # ← New message
+```
+
+```bash
+git add kubernetes/apps/hello-gitops/helmrelease.yaml
+git commit -m "Update hello-gitops message"
+git push
+
+# Flux detects change, re-renders templates, updates ConfigMap
+# Pod restarts with new HTML
+```
+
+#### Change 2: Scale the app (values change)
+
+```bash
+vim kubernetes/apps/hello-gitops/helmrelease.yaml
+```
+
+Change:
+```yaml
+  values:
+    replicaCount: 3   # ← Scale to 3 replicas
+```
+
+```bash
+git commit -am "Scale hello-gitops to 3 replicas"
+git push
+# Deployment scales to 3 pods
+```
+
+#### Change 3: Modify the chart itself (chart change)
+
+```bash
+# Edit the chart template
+vim charts/hello-gitops/templates/configmap.yaml
+# Change the HTML styling, add new elements, etc.
+
+# Bump the chart version (important!)
+vim charts/hello-gitops/Chart.yaml
+# Change version: 0.1.0 → version: 0.2.0
+
+git add charts/
+git commit -m "Update hello-gitops chart styling"
+git push
+# Flux detects chart change, re-deploys
+```
+
+---
+
+### Key Differences: Remote vs Local Charts
+
+| Aspect | Remote (Prometheus) | Local (hello-gitops) |
+|--------|--------------------|--------------------|
+| Chart location | External HTTPS URL | In your Git repo |
+| Source type | HelmRepository | GitRepository |
+| Chart reference | `chart: prometheus` (name) | `chart: ./charts/hello-gitops` (path) |
+| Extra resources | Need HelmRepository YAML | None (uses existing GitRepository) |
+| Updates | Controlled by `version: "25.x"` | Automatic on any Git change |
+| When to use | Third-party apps | Your own apps |
+
+---
+
+### Hands-On Exercises
+
+**1. Deploy and access** (after pushing):
+```bash
+# Check Flux deployed it
+flux get helmreleases -A
+
+# Wait for pods
+kubectl get pods -l app.kubernetes.io/name=hello-gitops -w
+
+# Access the app
+kubectl port-forward svc/hello-gitops 8080:80
+# Open http://localhost:8080 - see your message!
+```
+
+**2. Change message via Git**:
+```bash
+# Edit HelmRelease values.message
+# Commit and push
+# Refresh browser - message changes!
+```
+
+**3. Create a second chart**:
+```bash
+# Copy the pattern:
+cp -r charts/hello-gitops charts/my-app
+# Edit Chart.yaml (change name)
+# Edit templates as needed
+# Create kubernetes/apps/my-app/helmrelease.yaml
+# Add to kubernetes/apps/kustomization.yaml
+# Commit and push
+```
+
+---
 
 #### How Your Setup Uses Helm
-
-You don't run `helm install` commands. Instead, Flux manages Helm declaratively:
 
 | Traditional Helm | Your GitOps Setup |
 |-----------------|-------------------|
@@ -752,28 +1625,10 @@ You don't run `helm install` commands. Instead, Flux manages Helm declaratively:
 | `helm install prometheus ...` | HelmRelease YAML in Git |
 | `helm upgrade prometheus ...` | Edit HelmRelease, commit, Flux applies |
 | `helm rollback prometheus` | `git revert`, Flux applies |
+| `helm create mychart` | Create chart in `charts/` directory |
+| `helm install mychart ./mychart` | HelmRelease with GitRepository source |
 
-#### Helm Values Explained
-
-Your `helmrelease.yaml` `values:` section overrides chart defaults:
-
-```yaml
-# Chart default (in prometheus chart's values.yaml):
-server:
-  replicaCount: 1
-  persistentVolume:
-    enabled: true
-    size: 8Gi
-
-# Your override (in helmrelease.yaml):
-values:
-  server:
-    replicaCount: 1           # Keep default
-    persistentVolume:
-      enabled: false          # Override: disable persistence
-```
-
-Only specify values you want to change from defaults.
+---
 
 #### Useful Helm Commands (for debugging)
 
@@ -788,10 +1643,23 @@ helm get values prometheus -n monitoring --all
 helm get manifest prometheus -n monitoring
 
 # List releases
-helm list -n monitoring
+helm list -A
 
 # See release history
 helm history prometheus -n monitoring
+
+# Rollback to previous revision (in emergencies only - prefer git revert)
+helm rollback prometheus 1 -n monitoring
+
+# Template locally without installing
+helm template myrelease ./charts/hello-gitops --values custom.yaml
+
+# Lint chart for errors
+helm lint ./charts/hello-gitops
+
+# Show chart info
+helm show chart ./charts/hello-gitops
+helm show values ./charts/hello-gitops
 ```
 
 ---
@@ -1168,6 +2036,177 @@ HelmRelease gives us GitOps benefits: version control, audit trail, self-healing
 
 ---
 
+### Helm Deep Dive
+
+**Q: Explain the structure of a Helm chart.**
+
+A: A Helm chart has this structure:
+```
+mychart/
+├── Chart.yaml        # Metadata: name, version, appVersion, description
+├── values.yaml       # Default configuration values
+├── templates/        # Kubernetes manifest templates
+│   ├── _helpers.tpl  # Reusable template snippets (define/include)
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── NOTES.txt     # Post-install instructions
+└── charts/           # Dependencies (sub-charts)
+```
+
+Key files:
+- `Chart.yaml`: Identity of the chart (name, version)
+- `values.yaml`: Defaults that users override
+- `_helpers.tpl`: DRY - define templates once, include everywhere
+- `NOTES.txt`: Shown after install (how to access the app)
+
+---
+
+**Q: Explain this Helm template syntax: `{{ include "myapp.fullname" . | nindent 4 }}`**
+
+A: Breaking it down:
+- `include "myapp.fullname" .` - Call the template named "myapp.fullname", passing current context (`.`)
+- `|` - Pipe the result to next function
+- `nindent 4` - Add newline + 4 spaces indentation
+
+This is used to insert multi-line content (like labels) with proper YAML indentation:
+```yaml
+metadata:
+  labels:
+    {{- include "myapp.labels" . | nindent 4 }}
+```
+
+Result:
+```yaml
+metadata:
+  labels:
+    app.kubernetes.io/name: myapp
+    app.kubernetes.io/instance: myrelease
+```
+
+---
+
+**Q: What's the difference between `{{ }}` and `{{- }}`?**
+
+A: Whitespace control:
+- `{{ }}` - Preserves whitespace
+- `{{- }}` - Removes whitespace **before** the tag
+- `{{ -}}` - Removes whitespace **after** the tag
+- `{{- -}}` - Removes whitespace on both sides
+
+Example:
+```yaml
+labels:
+  {{- include "myapp.labels" . | nindent 2 }}
+```
+
+Without `{{-`, you'd get an extra blank line before the labels.
+
+---
+
+**Q: How do you deploy a local chart (from Git) vs a remote chart (from HelmRepository)?**
+
+A: Different `sourceRef` in HelmRelease:
+
+**Remote chart** (Prometheus):
+```yaml
+chart:
+  spec:
+    chart: prometheus           # Chart NAME
+    sourceRef:
+      kind: HelmRepository      # From Helm repo
+      name: prometheus-community
+```
+
+**Local chart** (hello-gitops):
+```yaml
+chart:
+  spec:
+    chart: ./charts/hello-gitops  # Chart PATH
+    sourceRef:
+      kind: GitRepository         # From Git repo
+      name: flux-system
+```
+
+Local charts don't need a separate HelmRepository - they use the existing GitRepository that Flux already watches.
+
+---
+
+**Q: What are Helm hooks and when would you use them?**
+
+A: Hooks run at specific lifecycle points:
+- `pre-install` / `post-install` - Before/after first install
+- `pre-upgrade` / `post-upgrade` - Before/after upgrades
+- `pre-delete` / `post-delete` - Before/after uninstall
+
+Common use cases:
+- **pre-upgrade**: Database migration, backup
+- **post-install**: Seed data, cache warming
+- **pre-delete**: Backup before removal
+
+Example:
+```yaml
+metadata:
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded
+```
+
+---
+
+**Q: How do you override values when using Flux HelmRelease?**
+
+A: In the `values:` section of HelmRelease:
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+spec:
+  chart:
+    spec:
+      chart: prometheus
+  values:
+    # These override the chart's values.yaml
+    server:
+      replicaCount: 2
+      resources:
+        limits:
+          memory: 1Gi
+```
+
+This is equivalent to:
+```bash
+helm install prometheus prometheus-community/prometheus \
+  --set server.replicaCount=2 \
+  --set server.resources.limits.memory=1Gi
+```
+
+But declarative and GitOps-managed.
+
+---
+
+**Q: What's `_helpers.tpl` and why use it?**
+
+A: A file containing reusable template definitions. The `_` prefix means Helm won't try to render it as a manifest.
+
+Purpose:
+1. **DRY**: Define once, use everywhere
+2. **Consistency**: Same names/labels across all resources
+3. **Kubernetes compliance**: Handle 63-char name limits
+
+Example:
+```yaml
+{{- define "myapp.fullname" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+```
+
+Usage in templates:
+```yaml
+name: {{ include "myapp.fullname" . }}
+```
+
+---
+
 ### GitOps Principles
 
 **Q: What are the core principles of GitOps and how does your setup implement them?**
@@ -1231,20 +2270,33 @@ gitops/
 │   ├── terraform-deploy.yml     # Push: plan only, Manual: plan OR apply
 │   └── terraform-destroy.yml    # Manual only, requires "yes-destroy"
 ├── terraform/                   # Creates GKE + bootstraps Flux
+├── charts/                      # Custom Helm charts
+│   └── hello-gitops/            # Example chart (local, from Git)
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/
+│           ├── _helpers.tpl
+│           ├── deployment.yaml
+│           ├── service.yaml
+│           ├── configmap.yaml
+│           └── NOTES.txt
 ├── kubernetes/
 │   ├── kustomization.yaml       # Root: flux-system + apps
 │   ├── flux-system/             # Flux manages itself
 │   └── apps/
-│       ├── kustomization.yaml   # prometheus + grafana
+│       ├── kustomization.yaml   # prometheus + grafana + hello-gitops
 │       ├── prometheus/
 │       │   ├── kustomization.yaml
 │       │   ├── helmrepository.yaml  → flux-system namespace
 │       │   └── helmrelease.yaml     → monitoring namespace
-│       └── grafana/
+│       ├── grafana/
+│       │   ├── kustomization.yaml
+│       │   ├── helmrepository.yaml  → flux-system namespace
+│       │   └── helmrelease.yaml     → monitoring namespace
+│       └── hello-gitops/
 │           ├── kustomization.yaml
-│           ├── helmrepository.yaml  → flux-system namespace
-│           └── helmrelease.yaml     → monitoring namespace
-└── plan.md, README.md
+│           └── helmrelease.yaml     → default namespace (local chart)
+└── plan.md, README.md, gitops-study-guide.md
 ```
 
 ### Key Commands

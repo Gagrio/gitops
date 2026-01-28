@@ -1,0 +1,41 @@
+# Default values for hello-gitops chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Number of pod replicas
+replicaCount: 1
+
+# Container image configuration
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+# Custom message displayed on the page
+message: "Hello from GitOps!"
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Pod labels (in addition to default labels)
+podLabels: {}
+
+# Node selector for pod scheduling
+nodeSelector: {}
+
+# Tolerations for pod scheduling
+tolerations: []
+
+# Affinity rules for pod scheduling
+affinity: {}
