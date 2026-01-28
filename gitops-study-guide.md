@@ -652,6 +652,64 @@ flux resume helmrelease prometheus -n monitoring
 
 ---
 
+### Flux CLI: Generating Resources (No YAML Memorization Needed!)
+
+You don't need to write Flux YAML from scratch. The `flux create` command generates it for you:
+
+```bash
+# Generate HelmRelease for REMOTE chart (from HelmRepository)
+flux create helmrelease prometheus \
+  --source=HelmRepository/prometheus-community \
+  --chart=prometheus \
+  --chart-version="25.x" \
+  --namespace=monitoring \
+  --target-namespace=monitoring \
+  --export > helmrelease.yaml
+
+# Generate HelmRelease for LOCAL chart (from GitRepository)
+flux create helmrelease hello-gitops \
+  --source=GitRepository/flux-system \
+  --chart=./charts/hello-gitops \
+  --namespace=default \
+  --export > helmrelease.yaml
+
+# Generate HelmRepository
+flux create source helm prometheus-community \
+  --url=https://prometheus-community.github.io/helm-charts \
+  --interval=1h \
+  --namespace=flux-system \
+  --export > helmrepository.yaml
+
+# Generate GitRepository
+flux create source git my-repo \
+  --url=https://github.com/myorg/myrepo \
+  --branch=main \
+  --interval=1m \
+  --export > gitrepository.yaml
+
+# Generate Kustomization (Flux kind, not kustomize)
+flux create kustomization apps \
+  --source=GitRepository/flux-system \
+  --path=./kubernetes/apps \
+  --prune=true \
+  --interval=10m \
+  --export > kustomization.yaml
+```
+
+**Key flag**: `--export` outputs YAML to stdout instead of applying to cluster. Pipe to a file with `> filename.yaml`.
+
+**Quick reference**:
+
+| What you need | Command |
+|---------------|---------|
+| HelmRelease (remote chart) | `flux create helmrelease NAME --source=HelmRepository/REPO --chart=CHART --export` |
+| HelmRelease (local chart) | `flux create helmrelease NAME --source=GitRepository/REPO --chart=./path --export` |
+| HelmRepository | `flux create source helm NAME --url=URL --export` |
+| GitRepository | `flux create source git NAME --url=URL --branch=BRANCH --export` |
+| Kustomization | `flux create kustomization NAME --source=GitRepository/REPO --path=PATH --export` |
+
+---
+
 ## 3. Kubernetes Concepts
 
 ### Kustomize
@@ -691,17 +749,48 @@ kubernetes/
 
 **Your pattern**: Simple resource aggregation. Each `kustomization.yaml` just lists what to include.
 
+#### Creating kustomization.yaml Files
+
+**For simple aggregation** (what your repo uses), just list resources:
+
+```bash
+# Create manually - it's simple enough
+cat > kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - prometheus
+  - grafana
+EOF
+```
+
+**Or use kustomize CLI**:
+
+```bash
+# Initialize kustomization.yaml in current directory
+kustomize init
+
+# Add resources to it
+kustomize edit add resource prometheus/
+kustomize edit add resource grafana/
+
+# Result: kustomization.yaml with resources listed
+```
+
 #### Building Locally
 
 ```bash
-# See what Kustomize produces
+# See what Kustomize produces (rendered output)
 kustomize build kubernetes/
 
-# Or with kubectl
+# Or with kubectl (kustomize is built-in)
 kubectl kustomize kubernetes/
 
 # Apply directly (but Flux does this automatically)
 kubectl apply -k kubernetes/
+
+# Dry-run to see what would be applied
+kubectl apply -k kubernetes/ --dry-run=client -o yaml
 ```
 
 #### Advanced Kustomize Features (not in your setup, but useful to know)
@@ -1080,48 +1169,85 @@ spec:
 
 ---
 
-#### Creating Your Own Chart
+#### Creating Your Own Chart (No YAML Memorization Needed!)
+
+**You don't write Helm charts from scratch.** Use `helm create` to scaffold everything:
 
 ```bash
-# Create new chart from template
+# Create new chart from template - THIS IS HOW YOU START
 helm create mychart
+```
 
-# This creates:
+This generates a complete, working chart with best practices:
+
+```
 mychart/
-├── Chart.yaml
-├── values.yaml
-├── charts/
+├── Chart.yaml           # Pre-filled with name, version
+├── values.yaml          # Common patterns (image, service, resources)
+├── charts/              # For dependencies
 ├── templates/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── ingress.yaml
-│   ├── hpa.yaml
+│   ├── deployment.yaml  # Full deployment with all the template syntax
+│   ├── service.yaml     # Service template
+│   ├── ingress.yaml     # Ingress (delete if not needed)
+│   ├── hpa.yaml         # HorizontalPodAutoscaler (delete if not needed)
 │   ├── serviceaccount.yaml
-│   ├── _helpers.tpl
-│   ├── NOTES.txt
+│   ├── _helpers.tpl     # All standard helpers pre-written!
+│   ├── NOTES.txt        # Post-install message template
 │   └── tests/
 │       └── test-connection.yaml
 └── .helmignore
+```
 
-# Lint the chart (check for errors)
+**Workflow**:
+1. `helm create mychart` - Generate scaffold
+2. Edit `Chart.yaml` - Update description, version
+3. Edit `values.yaml` - Set your defaults
+4. Edit/delete templates - Keep what you need, delete the rest
+5. `helm lint mychart` - Check for errors
+6. `helm template myrelease mychart` - Preview rendered output
+
+```bash
+# Validate your chart
 helm lint mychart
 
-# Template locally (see rendered output)
+# Preview what Kubernetes will receive (rendered templates)
 helm template myrelease mychart --values custom-values.yaml
 
-# Package for distribution
+# Preview with debug info
+helm template myrelease mychart --debug
+
+# Package for distribution (creates .tgz)
 helm package mychart
 # Creates: mychart-0.1.0.tgz
 
-# Install locally
+# Install to cluster (for testing without Flux)
 helm install myrelease mychart
 
-# Install with custom values
+# Install with value overrides
 helm install myrelease mychart --set replicaCount=3
 
 # Install with values file
 helm install myrelease mychart -f production-values.yaml
+
+# Dry-run (see what would happen without applying)
+helm install myrelease mychart --dry-run
 ```
+
+#### IDE Support (Even Less Typing!)
+
+**VSCode Extensions** that help:
+
+| Extension | What it does |
+|-----------|--------------|
+| **Kubernetes** | Snippets, validation, hover documentation |
+| **YAML** (Red Hat) | Schema validation, autocomplete for K8s resources |
+| **Helm Intellisense** | Autocomplete for `.Values`, `.Chart`, `.Release` |
+
+With these installed:
+- Type `dep` → autocomplete to full Deployment template
+- Type `.Values.` → see all available values
+- Hover over any field → see documentation
+- Red squiggles → syntax errors caught immediately
 
 ---
 
