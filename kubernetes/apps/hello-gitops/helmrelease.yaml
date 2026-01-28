@@ -19,7 +19,7 @@ spec:
     replicaCount: 1
     message: "Hello from GitOps! Deployed by Flux."
     service:
-      type: ClusterIP
+      type: LoadBalancer
     resources:
       limits:
         cpu: 100m

@@ -41,3 +41,34 @@ spec:
             url: http://prometheus-server.monitoring.svc.cluster.local
             access: proxy
             isDefault: true
+    # Auto-provision community dashboards
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: 'default'
+            orgId: 1
+            folder: ''
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/default
+    dashboards:
+      default:
+        kubernetes-cluster-monitoring:
+          gnetId: 7249
+          revision: 1
+          datasource: Prometheus
+        node-exporter-full:
+          gnetId: 1860
+          revision: 36
+          datasource: Prometheus
+        kubernetes-pods:
+          gnetId: 6417
+          revision: 1
+          datasource: Prometheus
+        kubernetes-cluster-overview:
+          gnetId: 315
+          revision: 3
+          datasource: Prometheus

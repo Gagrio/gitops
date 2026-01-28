@@ -2830,4 +2830,284 @@ git revert HEAD && git push
 
 ---
 
+## 6. Exposing Applications
+
+### LoadBalancer vs Ingress Trade-offs
+
+When exposing applications in Kubernetes, you have two primary options:
+
+#### LoadBalancer Service
+
+**How it works:**
+- Creates a cloud provider LoadBalancer (e.g., Network Load Balancer in GCP)
+- Direct L4 (TCP/UDP) load balancing
+- Each service gets its own external IP
+
+**Pros:**
+- Simple configuration
+- Works with any protocol (HTTP, TCP, UDP, gRPC)
+- No additional components required
+- Direct connection to pods (lower latency)
+- SSL/TLS termination at application level
+
+**Cons:**
+- Cost scales linearly with services (~$18-20/month per LoadBalancer in GCP)
+- No path-based routing
+- No hostname-based routing
+- Separate IP for each service
+- Limited traffic management features
+
+**Example from your repo:**
+```yaml
+# kubernetes/apps/hello-gitops/helmrelease.yaml
+service:
+  type: LoadBalancer  # Creates external LB
+```
+
+**Best for:**
+- Small number of services
+- Non-HTTP protocols
+- Simple deployments
+- Development/testing environments
+
+---
+
+#### Ingress
+
+**How it works:**
+- Single LoadBalancer + Ingress Controller (nginx, traefik, etc.)
+- L7 (HTTP/HTTPS) routing
+- Routes traffic based on hostname/path to backend services
+
+**Pros:**
+- Single external IP for multiple services
+- Cost-effective at scale (one LoadBalancer for all apps)
+- SSL/TLS termination at ingress
+- Advanced routing (path-based, header-based)
+- Centralized certificate management
+- Built-in rate limiting, auth, rewrite rules
+
+**Cons:**
+- Requires ingress controller installation
+- HTTP/HTTPS only (unless TCP/UDP ingress configured)
+- Additional complexity
+- Single point of failure (mitigated by HA setup)
+- Slight latency overhead from routing layer
+
+**Example:**
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-gitops
+spec:
+  type: ClusterIP  # Internal only
+  ports:
+    - port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-gitops
+spec:
+  rules:
+    - host: hello.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hello-gitops
+                port:
+                  number: 80
+```
+
+**Best for:**
+- Multiple HTTP/HTTPS services
+- Production environments with many apps
+- Need for advanced routing
+- Centralized SSL management
+- Cost optimization
+
+---
+
+#### Decision Matrix
+
+| Scenario | Recommendation |
+|----------|----------------|
+| 1-3 services, any protocol | LoadBalancer |
+| 4+ HTTP services | Ingress |
+| Non-HTTP protocol (gRPC, database) | LoadBalancer |
+| Need path-based routing | Ingress |
+| Budget-conscious | Ingress (for multiple apps) |
+| Simplicity > features | LoadBalancer |
+| Need centralized SSL | Ingress |
+
+---
+
+### Your Setup
+
+In this GitOps showcase:
+- **Grafana**: LoadBalancer (easy access to monitoring UI)
+- **hello-gitops**: LoadBalancer (demonstration simplicity)
+- **Prometheus**: ClusterIP (internal metrics collection only)
+
+**Cost impact:** 2 LoadBalancers = ~$36-40/month + nodes (~$49/month) = ~$85-89/month total
+
+**Production alternative:** Use 1 Ingress Controller with LoadBalancer + 2 Ingress resources = ~$18-20/month savings
+
+---
+
+## 7. Grafana Dashboard Provisioning
+
+### Overview
+
+Grafana supports automatic dashboard provisioning via:
+1. **Dashboard Providers**: Configure where/how to load dashboards
+2. **Dashboards**: Specify which dashboards to import
+
+When using Helm, this is configured in the `values` section of the HelmRelease.
+
+---
+
+### How It Works
+
+**Step 1: Define Dashboard Provider**
+
+Tells Grafana where to find dashboard JSON files:
+
+```yaml
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''  # Root folder, or specify folder name
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+```
+
+**Step 2: Define Dashboards**
+
+Specify which dashboards to download from Grafana.com:
+
+```yaml
+dashboards:
+  default:  # Matches provider name
+    my-dashboard:
+      gnetId: 7249          # Dashboard ID from grafana.com
+      revision: 1            # Dashboard version
+      datasource: Prometheus # Default datasource to use
+```
+
+---
+
+### Your Actual Configuration
+
+**File:** `kubernetes/apps/grafana/helmrelease.yaml`
+
+```yaml
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+dashboards:
+  default:
+    kubernetes-cluster-monitoring:
+      gnetId: 7249   # Kubernetes Cluster Monitoring
+      revision: 1
+      datasource: Prometheus
+    node-exporter-full:
+      gnetId: 1860   # Node Exporter Full
+      revision: 36
+      datasource: Prometheus
+    kubernetes-pods:
+      gnetId: 6417   # Kubernetes Pods
+      revision: 1
+      datasource: Prometheus
+    kubernetes-cluster-overview:
+      gnetId: 315    # Kubernetes Cluster Overview
+      revision: 3
+      datasource: Prometheus
+```
+
+---
+
+### Community Dashboards Included
+
+| Dashboard ID | Name | What It Shows |
+|--------------|------|---------------|
+| 7249 | Kubernetes Cluster Monitoring | Cluster-level metrics: CPU, memory, network usage across nodes |
+| 1860 | Node Exporter Full | Detailed node metrics: CPU, memory, disk I/O, network, filesystem |
+| 6417 | Kubernetes Pods | Pod-level metrics: container CPU/memory, restarts, status |
+| 315 | Kubernetes Cluster Overview | High-level cluster health: pods, deployments, resource quotas |
+
+---
+
+### How to Find Dashboard IDs
+
+1. Browse [grafana.com/dashboards](https://grafana.com/grafana/dashboards/)
+2. Search for your tech stack (e.g., "Kubernetes", "PostgreSQL", "nginx")
+3. Copy the dashboard ID from the URL: `grafana.com/grafana/dashboards/7249` → ID: `7249`
+4. Note the latest revision number (or omit for latest)
+
+---
+
+### Adding More Dashboards
+
+To add a dashboard:
+
+1. Find the dashboard ID on grafana.com
+2. Edit `kubernetes/apps/grafana/helmrelease.yaml`
+3. Add entry under `dashboards.default`:
+
+```yaml
+dashboards:
+  default:
+    # ... existing dashboards ...
+    nginx-ingress:
+      gnetId: 9614
+      revision: 1
+      datasource: Prometheus
+```
+
+4. Commit and push - Flux reconciles automatically
+5. Dashboards appear in Grafana within ~1 minute
+
+---
+
+### Troubleshooting
+
+**Dashboard not appearing?**
+```bash
+# Check Grafana logs
+kubectl logs -n monitoring deployment/grafana
+
+# Check ConfigMap (dashboards stored here)
+kubectl get cm -n monitoring | grep dashboard
+
+# Force Flux reconciliation
+flux reconcile helmrelease grafana -n monitoring
+```
+
+**Wrong datasource?**
+- Ensure `datasource: Prometheus` matches your datasource name
+- Check datasource config in `datasources.yaml` section
+
+---
+
 Good luck with your preparation!
