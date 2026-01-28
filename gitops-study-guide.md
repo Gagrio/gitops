@@ -1269,50 +1269,97 @@ This tutorial walks you through creating your own Helm chart and deploying it vi
 
 ---
 
-### Step 1: Create the Chart Directory Structure
+### Step 1: Scaffold the Chart with `helm create`
+
+**Don't create files manually!** Use the Helm CLI to generate a complete scaffold:
 
 ```bash
-# Create the chart directory
-mkdir -p charts/hello-gitops/templates
+# Create the chart scaffold
+helm create charts/hello-gitops
 
-# You'll create these files:
+# This generates a complete, working chart:
 charts/hello-gitops/
-├── Chart.yaml          # REQUIRED: Chart metadata
-├── values.yaml         # REQUIRED: Default values
-└── templates/          # REQUIRED: Kubernetes templates
-    ├── _helpers.tpl    # Reusable template snippets
-    ├── deployment.yaml # Your app deployment
-    ├── service.yaml    # Service to expose the app
-    ├── configmap.yaml  # Configuration data
-    └── NOTES.txt       # Post-install message
+├── Chart.yaml           # Pre-filled metadata
+├── values.yaml          # Common defaults (image, service, resources)
+├── charts/              # For dependencies (empty)
+├── templates/
+│   ├── deployment.yaml  # Full deployment template
+│   ├── service.yaml     # Service template
+│   ├── ingress.yaml     # Ingress (we'll delete this)
+│   ├── hpa.yaml         # HorizontalPodAutoscaler (we'll delete this)
+│   ├── serviceaccount.yaml  # (we'll delete this)
+│   ├── _helpers.tpl     # All helpers pre-written!
+│   ├── NOTES.txt        # Post-install instructions
+│   └── tests/           # (we'll delete this)
+└── .helmignore
+```
+
+**What you get for free**:
+- `_helpers.tpl` with fullname, labels, selectorLabels already defined
+- Best-practice templates with proper indentation
+- Working defaults that deploy nginx out of the box
+
+---
+
+### Step 2: Clean Up - Delete What You Don't Need
+
+```bash
+# Remove templates we don't need for this simple app
+rm charts/hello-gitops/templates/ingress.yaml
+rm charts/hello-gitops/templates/hpa.yaml
+rm charts/hello-gitops/templates/serviceaccount.yaml
+rm -rf charts/hello-gitops/templates/tests/
+
+# Now we have a cleaner structure:
+charts/hello-gitops/
+├── Chart.yaml
+├── values.yaml
+└── templates/
+    ├── _helpers.tpl     # Keep - has useful helpers
+    ├── deployment.yaml  # Keep - we'll modify
+    ├── service.yaml     # Keep - we'll modify
+    └── NOTES.txt        # Keep - modify for our app
 ```
 
 ---
 
-### Step 2: Create Chart.yaml (Chart Identity)
+### Step 3: Edit Chart.yaml (Chart Identity)
 
-**File**: `charts/hello-gitops/Chart.yaml`
+Open the generated `Chart.yaml` and customize it:
+
+```bash
+# Edit the chart metadata
+vim charts/hello-gitops/Chart.yaml
+```
+
+**Change from generated defaults to**:
 
 ```yaml
-apiVersion: v2                    # v2 = Helm 3
-name: hello-gitops                # Chart name (referenced in templates as .Chart.Name)
-description: A simple Helm chart to demonstrate GitOps with Flux
-type: application                 # "application" = deployable, "library" = shared code only
+apiVersion: v2
+name: hello-gitops                # Chart name (already correct from helm create)
+description: A simple Helm chart to demonstrate GitOps with Flux  # Update this
+type: application
 
-version: 0.1.0                    # CHART version - bump when chart changes
-appVersion: "1.0.0"               # APP version - what version of your app this deploys
+version: 0.1.0                    # Keep or update
+appVersion: "1.0.0"               # Keep or update
 ```
 
 **Key points**:
-- `name`: Used as default for resource names
+- `name`: Used as default for resource names (already set by `helm create`)
 - `version`: Semantic versioning. Bump this when you change the chart.
 - `appVersion`: Informational - shows in `helm list`
 
 ---
 
-### Step 3: Create values.yaml (Configuration)
+### Step 4: Edit values.yaml (Configuration)
 
-**File**: `charts/hello-gitops/values.yaml`
+The generated `values.yaml` has common patterns. Edit it for your needs:
+
+```bash
+vim charts/hello-gitops/values.yaml
+```
+
+**Simplify to what we need**:
 
 ```yaml
 # These are DEFAULTS that users can override
@@ -1323,7 +1370,8 @@ image:
   tag: "1.25-alpine"
   pullPolicy: IfNotPresent
 
-message: "Hello from GitOps!"     # Custom value used in configmap
+# Custom value - add this for our configmap
+message: "Hello from GitOps!"
 
 service:
   type: ClusterIP
@@ -1347,61 +1395,59 @@ resources:
 
 ---
 
-### Step 4: Create _helpers.tpl (Reusable Templates)
+### Step 5: Review _helpers.tpl (Already Generated!)
 
-**File**: `charts/hello-gitops/templates/_helpers.tpl`
+**Good news**: `helm create` already generated `_helpers.tpl` with all standard helpers!
 
-```yaml
-{{/*
-Generate the full name for resources.
-If release is "myrelease" and chart is "hello-gitops", returns "myrelease-hello-gitops"
-Truncated to 63 chars (Kubernetes name limit)
-*/}}
-{{- define "hello-gitops.fullname" -}}
-{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
-{{- end }}
+Open it to understand what's available:
 
-{{/*
-Generate standard labels for all resources.
-Ensures consistent labeling across deployment, service, etc.
-*/}}
-{{- define "hello-gitops.labels" -}}
-helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Selector labels - subset used for pod selection.
-Must match between Deployment.spec.selector and Pod labels.
-*/}}
-{{- define "hello-gitops.selectorLabels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
+```bash
+cat charts/hello-gitops/templates/_helpers.tpl
 ```
 
-**Why this matters**:
-- `define` creates a named template
-- `include` calls it from other templates
-- Ensures ALL resources have consistent names and labels
-- Handles Kubernetes 63-char name limit automatically
+**What you get for free**:
+
+```yaml
+{{/* Already defined by helm create: */}}
+
+{{- define "hello-gitops.name" -}}         {{/* Chart name */}}
+{{- define "hello-gitops.fullname" -}}     {{/* release-chartname (truncated to 63 chars) */}}
+{{- define "hello-gitops.chart" -}}        {{/* chartname-version */}}
+{{- define "hello-gitops.labels" -}}       {{/* Standard Kubernetes labels */}}
+{{- define "hello-gitops.selectorLabels" -}} {{/* Labels for pod selection */}}
+```
+
+**You don't need to write these** - they're ready to use in your templates with:
+```yaml
+name: {{ include "hello-gitops.fullname" . }}
+labels:
+  {{- include "hello-gitops.labels" . | nindent 4 }}
+```
 
 ---
 
-### Step 5: Create the Templates
+### Step 6: Modify the Templates
 
-#### deployment.yaml
+The generated templates are functional but generic. Let's customize them.
+
+#### deployment.yaml - Review and Modify
 
 **File**: `charts/hello-gitops/templates/deployment.yaml`
+
+The generated file already has proper structure. Main changes needed:
+- Add volume mount for our configmap (custom HTML)
+
+```bash
+vim charts/hello-gitops/templates/deployment.yaml
+```
+
+**Key parts to understand** (already generated):
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "hello-gitops.fullname" . }}       # Uses helper
+  name: {{ include "hello-gitops.fullname" . }}       # Uses helper from _helpers.tpl
   labels:
     {{- include "hello-gitops.labels" . | nindent 4 }} # Uses helper
 spec:
@@ -1423,9 +1469,11 @@ spec:
               containerPort: 80
           resources:
             {{- toYaml .Values.resources | nindent 12 }} # Converts YAML object
+          # ADD THIS: Mount our custom HTML
           volumeMounts:
             - name: html
               mountPath: /usr/share/nginx/html
+      # ADD THIS: ConfigMap volume
       volumes:
         - name: html
           configMap:
@@ -1440,7 +1488,11 @@ spec:
 
 #### service.yaml
 
+#### service.yaml - Already Generated!
+
 **File**: `charts/hello-gitops/templates/service.yaml`
+
+The generated service.yaml is already perfect. Just review it:
 
 ```yaml
 apiVersion: v1
@@ -1460,9 +1512,17 @@ spec:
     {{- include "hello-gitops.selectorLabels" . | nindent 4 }}
 ```
 
-#### configmap.yaml
+**No changes needed** - it already uses values from `values.yaml`.
 
-**File**: `charts/hello-gitops/templates/configmap.yaml`
+#### configmap.yaml - Create This One (Not Generated)
+
+This is the one file we need to **create** - it's custom for our app:
+
+```bash
+vim charts/hello-gitops/templates/configmap.yaml
+```
+
+**Create this file**:
 
 ```yaml
 apiVersion: v1
@@ -1477,7 +1537,7 @@ data:
     <html>
     <head><title>Hello GitOps</title></head>
     <body>
-        <h1>{{ .Values.message }}</h1>        # ← Your custom message!
+        <h1>{{ .Values.message }}</h1>
         <p>Chart: {{ .Chart.Name }} v{{ .Chart.Version }}</p>
     </body>
     </html>
@@ -1487,13 +1547,14 @@ data:
 
 ---
 
-### Step 6: Test the Chart Locally (Optional)
+### Step 7: Test the Chart Locally
 
-Before deploying via Flux, you can test locally:
+Before deploying via Flux, validate your chart:
 
 ```bash
 # Check for syntax errors
 helm lint charts/hello-gitops/
+# Expected: "1 chart(s) linted, 0 chart(s) failed"
 
 # See the rendered output (what Kubernetes will receive)
 helm template myrelease charts/hello-gitops/
@@ -1501,59 +1562,99 @@ helm template myrelease charts/hello-gitops/
 # See with custom values
 helm template myrelease charts/hello-gitops/ --set message="Testing!"
 
-# Actually install (if you have kubectl access)
+# Dry-run install (validates against Kubernetes API if connected)
 helm install myrelease charts/hello-gitops/ --dry-run
 ```
 
+**Fix any errors before proceeding.**
+
 ---
 
-### Step 7: Create the Flux HelmRelease
+### Step 8: Create the Flux HelmRelease
 
-Now tell Flux to deploy this chart. Create the Flux resources:
+Now tell Flux to deploy this chart. **Use the Flux CLI** to generate the YAML:
 
-**Directory**: `kubernetes/apps/hello-gitops/`
+```bash
+# Create the directory
+mkdir -p kubernetes/apps/hello-gitops
 
-**File**: `kubernetes/apps/hello-gitops/helmrelease.yaml`
+# Generate HelmRelease using Flux CLI
+flux create helmrelease hello-gitops \
+  --source=GitRepository/flux-system \
+  --chart=./charts/hello-gitops \
+  --namespace=default \
+  --interval=5m \
+  --export > kubernetes/apps/hello-gitops/helmrelease.yaml
+```
+
+**Then edit to add your values**:
+
+```bash
+vim kubernetes/apps/hello-gitops/helmrelease.yaml
+```
+
+**Add the values section at the end**:
 
 ```yaml
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: hello-gitops
-  namespace: default              # Where to deploy the app
+  namespace: default
 spec:
-  interval: 5m                    # How often to check for drift
   chart:
     spec:
-      chart: ./charts/hello-gitops   # PATH to chart (not name!)
+      chart: ./charts/hello-gitops
+      reconcileStrategy: ChartVersion
       sourceRef:
-        kind: GitRepository          # ← KEY: Use Git, not HelmRepository
-        name: flux-system            # The GitRepository Flux already uses
-        namespace: flux-system
-      interval: 1m
-  values:                            # Override default values
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system     # ← Note: may need to add this
+  interval: 5m0s
+  # ADD THIS VALUES SECTION:
+  values:
     replicaCount: 1
     message: "Hello from GitOps! Deployed by Flux."
     service:
       type: ClusterIP
 ```
 
-**File**: `kubernetes/apps/hello-gitops/kustomization.yaml`
+**Create the kustomization.yaml** (for the hello-gitops directory):
 
-```yaml
+```bash
+# Option 1: Simple manual creation
+cat > kubernetes/apps/hello-gitops/kustomization.yaml << 'EOF'
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - helmrelease.yaml
+EOF
+
+# Option 2: Using kustomize CLI
+cd kubernetes/apps/hello-gitops
+kustomize init
+kustomize edit add resource helmrelease.yaml
+cd ../../..
 ```
 
 ---
 
-### Step 8: Register with Flux
+### Step 9: Register with Flux
 
-Add hello-gitops to the apps kustomization:
+Add hello-gitops to the apps kustomization so Flux includes it:
 
-**File**: `kubernetes/apps/kustomization.yaml`
+```bash
+# Option 1: Using kustomize CLI (recommended)
+cd kubernetes/apps
+kustomize edit add resource hello-gitops
+cd ../..
+
+# Option 2: Manual edit
+vim kubernetes/apps/kustomization.yaml
+# Add "- hello-gitops" to resources
+```
+
+**Result** - `kubernetes/apps/kustomization.yaml`:
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -1561,18 +1662,25 @@ kind: Kustomization
 resources:
   - prometheus
   - grafana
-  - hello-gitops    # ← Add this line
+  - hello-gitops    # ← Added by kustomize edit (or manually)
 ```
 
 ---
 
-### Step 9: Commit and Push
+### Step 10: Commit and Push
 
 ```bash
+# Stage all the new files
 git add charts/ kubernetes/apps/hello-gitops/ kubernetes/apps/kustomization.yaml
-git commit -m "Add hello-gitops custom Helm chart"
+
+# Commit with descriptive message
+git commit -m "Add hello-gitops custom Helm chart with Flux deployment"
+
+# Push to trigger Flux reconciliation
 git push
 ```
+
+**What happens next**: Flux detects the push within 1 minute and deploys your chart automatically.
 
 ---
 
@@ -1739,6 +1847,80 @@ cp -r charts/hello-gitops charts/my-app
 # Create kubernetes/apps/my-app/helmrelease.yaml
 # Add to kubernetes/apps/kustomization.yaml
 # Commit and push
+```
+
+---
+
+### Tutorial Quick Reference: All CLI Commands
+
+Here's a copy-paste summary of all commands from the tutorial:
+
+```bash
+# ============================================
+# STEP 1: Create chart scaffold
+# ============================================
+helm create charts/hello-gitops
+
+# ============================================
+# STEP 2: Clean up (remove what you don't need)
+# ============================================
+rm charts/hello-gitops/templates/ingress.yaml
+rm charts/hello-gitops/templates/hpa.yaml
+rm charts/hello-gitops/templates/serviceaccount.yaml
+rm -rf charts/hello-gitops/templates/tests/
+
+# ============================================
+# STEPS 3-6: Edit files
+# ============================================
+# Edit Chart.yaml, values.yaml, templates as needed
+# Create configmap.yaml for custom content
+
+# ============================================
+# STEP 7: Validate chart
+# ============================================
+helm lint charts/hello-gitops/
+helm template myrelease charts/hello-gitops/
+
+# ============================================
+# STEP 8: Generate Flux HelmRelease
+# ============================================
+mkdir -p kubernetes/apps/hello-gitops
+
+flux create helmrelease hello-gitops \
+  --source=GitRepository/flux-system \
+  --chart=./charts/hello-gitops \
+  --namespace=default \
+  --interval=5m \
+  --export > kubernetes/apps/hello-gitops/helmrelease.yaml
+
+# Add values section manually to the generated file
+
+# Create kustomization.yaml
+cat > kubernetes/apps/hello-gitops/kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+EOF
+
+# ============================================
+# STEP 9: Register with parent kustomization
+# ============================================
+cd kubernetes/apps && kustomize edit add resource hello-gitops && cd ../..
+
+# ============================================
+# STEP 10: Commit and push
+# ============================================
+git add charts/ kubernetes/apps/hello-gitops/ kubernetes/apps/kustomization.yaml
+git commit -m "Add hello-gitops custom Helm chart with Flux deployment"
+git push
+
+# ============================================
+# VERIFY: Check deployment
+# ============================================
+flux get helmreleases -A
+kubectl get pods -l app.kubernetes.io/name=hello-gitops
+kubectl port-forward svc/hello-gitops 8080:80
 ```
 
 ---
