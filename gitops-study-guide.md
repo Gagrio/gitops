@@ -1938,6 +1938,196 @@ kubectl port-forward svc/hello-gitops 8080:80
 
 ---
 
+#### Flux HelmRelease vs Terraform Helm Provider
+
+You can deploy Helm charts two ways: **Flux HelmRelease** (what your setup uses) or **Terraform Helm Provider**. Here's when to use each:
+
+##### Comparison Table
+
+| Aspect | Flux HelmRelease | Terraform Helm Provider |
+|--------|------------------|------------------------|
+| **Model** | Pull-based (GitOps) | Push-based |
+| **Where it runs** | Inside the cluster | Outside (CI/CD, local machine) |
+| **Credentials** | Cluster has Git read access | CI/CD needs cluster credentials |
+| **State storage** | Kubernetes (HelmRelease CRD) | Terraform state file |
+| **Drift detection** | Continuous (every 5-10 min) | Only when you run `terraform plan` |
+| **Self-healing** | Yes - auto-corrects drift | No - manual `terraform apply` needed |
+| **Rollback** | `git revert` + auto-reconcile | `terraform apply` with previous state |
+| **Dependencies** | Flux controllers running | Terraform + kubeconfig |
+| **Lifecycle** | Continuous reconciliation | One-time apply |
+
+##### When to Use Terraform Helm Provider
+
+```hcl
+# Example: Terraform Helm Provider
+resource "helm_release" "nginx_ingress" {
+  name       = "nginx-ingress"
+  repository = "https://kubernetes.github.io/ingress-nginx"
+  chart      = "ingress-nginx"
+  namespace  = "ingress-nginx"
+
+  set {
+    name  = "controller.replicaCount"
+    value = "2"
+  }
+}
+```
+
+**Best for**:
+- **Cluster bootstrap**: Installing Flux itself, CNI plugins, critical infrastructure
+- **Infrastructure-tied components**: Things that should be created/destroyed with the cluster
+- **Cross-resource dependencies**: When Helm release depends on Terraform resources (e.g., install cert-manager after creating DNS zone)
+- **One-time setup**: Components you don't expect to change frequently
+
+**Your setup uses this for**: Bootstrapping Flux via `flux_bootstrap_git` Terraform resource
+
+##### When to Use Flux HelmRelease
+
+```yaml
+# Example: Flux HelmRelease
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: prometheus
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+```
+
+**Best for**:
+- **Application deployments**: Prometheus, Grafana, your apps
+- **Frequently changing configs**: Easy to update via Git
+- **Team collaboration**: Developers can update values via PR
+- **Self-healing requirements**: Critical apps that must stay running
+- **Multi-environment**: Same chart, different values per environment
+
+**Your setup uses this for**: Prometheus, Grafana, hello-gitops
+
+##### The Hybrid Pattern (Your Setup!)
+
+Your repository demonstrates the **recommended hybrid pattern**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TERRAFORM (Push)                                  │
+│  Creates:                                                                   │
+│  • GKE cluster                                                             │
+│  • GCS bucket for state                                                    │
+│  • Flux bootstrap (installs Flux, creates GitRepository)                   │
+│                                                                             │
+│  Why Terraform: Cluster must exist before Flux can run inside it           │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │ Terraform creates cluster + installs Flux
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           FLUX (Pull)                                       │
+│  Manages:                                                                   │
+│  • Prometheus (HelmRelease)                                                │
+│  • Grafana (HelmRelease)                                                   │
+│  • hello-gitops (HelmRelease from local chart)                             │
+│  • Future applications...                                                  │
+│                                                                             │
+│  Why Flux: Continuous reconciliation, self-healing, Git-based workflows    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Rule of thumb**:
+- **Terraform**: Infrastructure that applications run ON (cluster, networking, Flux itself)
+- **Flux**: Applications that run IN the cluster
+
+##### Code Comparison: Same Chart, Different Approaches
+
+**Terraform Helm Provider**:
+```hcl
+resource "helm_release" "prometheus" {
+  name             = "prometheus"
+  repository       = "https://prometheus-community.github.io/helm-charts"
+  chart            = "prometheus"
+  version          = "25.8.0"
+  namespace        = "monitoring"
+  create_namespace = true
+
+  values = [
+    yamlencode({
+      server = {
+        replicaCount = 1
+        persistentVolume = {
+          enabled = false
+        }
+      }
+    })
+  ]
+}
+```
+
+**Flux HelmRelease**:
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://prometheus-community.github.io/helm-charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: prometheus
+      version: "25.x"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+  values:
+    server:
+      replicaCount: 1
+      persistentVolume:
+        enabled: false
+```
+
+**Key differences in practice**:
+
+| Scenario | Terraform | Flux |
+|----------|-----------|------|
+| Update replicas | Edit .tf → `terraform apply` | Edit YAML → `git push` |
+| Someone deletes pods | Pods stay deleted until `terraform apply` | Flux recreates within minutes |
+| View change history | Terraform state + Git history of .tf files | Git history of YAML |
+| Rollback | `terraform apply` with old state/code | `git revert` → auto-applies |
+| CI/CD needs | Cluster credentials in CI | Only Git access |
+
+##### Interview Question
+
+**Q: Why do you use Terraform for Flux but Flux for Prometheus?**
+
+A: It's about lifecycle and dependencies:
+
+1. **Flux needs a cluster to run in**. Terraform creates the GKE cluster first, then installs Flux into it. You can't use Flux to install Flux - it's a chicken-and-egg problem.
+
+2. **Prometheus is an application**. Once Flux is running, it's better suited for managing applications because:
+   - Self-healing: If someone accidentally deletes Prometheus, Flux recreates it
+   - GitOps workflow: Developers can update Prometheus config via PR
+   - No credentials in CI: Changes flow through Git, not kubectl
+
+3. **Separation of concerns**:
+   - Terraform = Infrastructure team manages cluster lifecycle
+   - Flux = Application teams manage their deployments via Git
+
+---
+
 #### Useful Helm Commands (for debugging)
 
 ```bash
