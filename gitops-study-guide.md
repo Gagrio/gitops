@@ -7,7 +7,13 @@
 2. [Flux CD](#2-flux-cd)
 3. [Kubernetes Concepts](#3-kubernetes-concepts)
 4. [GitOps Principles](#4-gitops-principles)
-5. [Interview Questions](#5-interview-questions)
+5. [Deployment Strategies](#5-deployment-strategies)
+6. [Secrets Management](#6-secrets-management)
+7. [Exposing Applications](#7-exposing-applications)
+8. [Grafana Dashboard Provisioning](#8-grafana-dashboard-provisioning)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Interview Questions](#10-interview-questions)
+11. [Quick Reference](#11-quick-reference)
 
 ---
 
@@ -459,10 +465,13 @@ spec:
 
 **What this demonstrates**:
 - **Namespace separation**: HelmRelease in `monitoring`, HelmRepository in `flux-system`
+- **Cross-namespace reference**: `namespace: flux-system` in sourceRef is **required** when referencing resources in different namespaces
 - **Semver versioning**: `"25.x"` allows automatic minor/patch updates
 - **Values override**: Customize chart defaults for your use case
 - **Resource limits**: Good practice for cluster resource management
 - **Feature toggles**: Enable/disable chart components as needed
+
+**Important note on cross-namespace references:** When a HelmRelease references a HelmRepository (or GitRepository) in a different namespace, you must specify `namespace: flux-system` in the `sourceRef`. If omitted, Flux looks for the source in the same namespace as the HelmRelease and fails.
 
 ---
 
@@ -2407,9 +2416,1268 @@ git push
 
 ---
 
-## 5. Interview Questions
+## 5. Deployment Strategies
 
-### GitHub Actions
+### Overview
+
+Deployment strategies determine how you roll out new versions of applications with different trade-offs for downtime, risk, resource usage, and complexity.
+
+---
+
+### Recreate
+
+**How it works:**
+1. Stop all old version pods
+2. Start new version pods
+3. Wait for new pods to be ready
+
+**Kubernetes Configuration:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+  strategy:
+    type: Recreate  # No rolling update
+  template:
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:2.0.0
+```
+
+**Pros:**
+- Simplest strategy
+- No version mixing (never have v1 and v2 running simultaneously)
+- No resource overhead (don't need extra pods)
+- Good for stateful apps that can't handle multiple versions
+
+**Cons:**
+- **Downtime**: Application unavailable during deployment
+- High risk: If new version fails, rollback requires another downtime window
+
+**Use when:**
+- Application cannot handle multiple versions running
+- Stateful applications with incompatible state changes
+- Development/testing environments where downtime is acceptable
+- Database schema migrations require downtime
+
+**Interview tip:** "Recreate is like turning it off and on again. Simple but has downtime. Use it when you can't have two versions running or when downtime is acceptable."
+
+---
+
+### Rolling Update
+
+**How it works:**
+1. Create new pods one at a time (or in batches)
+2. Wait for new pod to be ready
+3. Terminate old pod
+4. Repeat until all pods are new version
+
+**Kubernetes Configuration:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate  # Default strategy
+    rollingUpdate:
+      maxSurge: 1        # Max 1 extra pod during rollout
+      maxUnavailable: 1  # Max 1 pod can be unavailable
+  template:
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:2.0.0
+```
+
+**Pros:**
+- Zero downtime
+- Gradual rollout reduces blast radius
+- Automatic rollback on failure (via readiness probes)
+- Resource-efficient (controlled by maxSurge)
+
+**Cons:**
+- Both versions run simultaneously (must be compatible)
+- Slower than Recreate
+- Partial rollout state can complicate debugging
+- No traffic control (K8s just distributes based on ready pods)
+
+**Key parameters:**
+- `maxSurge`: Max pods above desired count during update (absolute or %)
+- `maxUnavailable`: Max pods that can be unavailable during update
+
+**Example calculation** (replicas: 10, maxSurge: 2, maxUnavailable: 1):
+- Can have up to 12 pods during rollout (10 + 2)
+- Must have at least 9 pods available (10 - 1)
+
+**Use when:**
+- Standard web applications
+- Versions are backward compatible
+- Zero downtime required
+- Don't need fine-grained traffic control
+
+**Your setup uses this:** Kubernetes default for all Deployments created by Helm charts (Prometheus, Grafana, hello-gitops).
+
+**Interview tip:** "Rolling update is Kubernetes default. Zero downtime, gradual rollout, but you can't control traffic percentage—just how many pods update at once."
+
+---
+
+### Blue-Green
+
+**How it works:**
+1. Deploy new version (Green) alongside old version (Blue)
+2. Green runs fully, not receiving traffic
+3. Test Green environment
+4. Switch traffic from Blue to Green instantly (update Service selector or LoadBalancer)
+5. Keep Blue running for quick rollback
+6. Terminate Blue after validation period
+
+**Kubernetes Implementation:**
+```yaml
+# Blue deployment (current)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: blue
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:1.0.0
+---
+# Green deployment (new)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      version: green
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: green
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:2.0.0
+---
+# Service (initially points to blue)
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+spec:
+  selector:
+    app: myapp
+    version: blue  # Change to "green" to switch traffic
+  ports:
+    - port: 80
+```
+
+**Traffic switch:**
+```bash
+# Test green deployment directly
+kubectl port-forward deployment/myapp-green 8080:80
+
+# Switch traffic (edit service selector)
+kubectl patch service myapp -p '{"spec":{"selector":{"version":"green"}}}'
+
+# Instant rollback if needed
+kubectl patch service myapp -p '{"spec":{"selector":{"version":"blue"}}}'
+```
+
+**Pros:**
+- Instant traffic switch (seconds)
+- Instant rollback
+- Green can be fully tested before traffic switch
+- No version mixing
+- Zero downtime
+
+**Cons:**
+- **2x resource cost** (full Blue + full Green environments)
+- Requires infrastructure for two environments
+- Database migrations tricky (must be compatible with both versions)
+- Wasted resources while both run
+
+**Use when:**
+- High-risk deployments requiring extensive pre-production testing
+- Need instant rollback capability
+- Resource cost is acceptable
+- Cannot tolerate any version mixing
+- Compliance requires testing in production-like environment
+
+**Flux Implementation:**
+```yaml
+# Create two HelmReleases
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: myapp-blue
+  namespace: production
+spec:
+  releaseName: myapp-blue
+  chart:
+    spec:
+      chart: ./charts/myapp
+  values:
+    version: blue
+    image:
+      tag: "1.0.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: myapp-green
+  namespace: production
+spec:
+  releaseName: myapp-green
+  chart:
+    spec:
+      chart: ./charts/myapp
+  values:
+    version: green
+    image:
+      tag: "2.0.0"
+```
+
+**Interview tip:** "Blue-Green is instant switchover between two full environments. Great for high-risk deploys, but costs double the resources. Common in financial services."
+
+---
+
+### Canary
+
+**How it works:**
+1. Deploy new version to small subset of pods (e.g., 10%)
+2. Route small percentage of traffic to new version
+3. Monitor metrics (error rate, latency, etc.)
+4. Gradually increase traffic to new version (20%, 50%, 100%)
+5. Rollback if metrics degrade
+
+**Manual Kubernetes Implementation:**
+```yaml
+# Stable deployment (90% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-stable
+spec:
+  replicas: 9
+  selector:
+    matchLabels:
+      app: myapp
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: myapp
+        track: stable
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:1.0.0
+---
+# Canary deployment (10% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: myapp
+        track: canary
+    spec:
+      containers:
+        - name: myapp
+          image: myapp:2.0.0
+---
+# Service selects both (traffic distributed by pod count)
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+spec:
+  selector:
+    app: myapp  # Matches both stable and canary
+  ports:
+    - port: 80
+```
+
+**Traffic distribution:** With 9 stable pods and 1 canary pod, roughly 10% of requests go to canary (based on load balancing across 10 total pods).
+
+**Pros:**
+- Gradual rollout reduces risk
+- Real production traffic testing with minimal impact
+- Can detect issues early with small user percentage
+- Easy rollback (just delete canary deployment)
+
+**Cons:**
+- Manual traffic distribution is imprecise (based on pod count)
+- No automatic rollback
+- Manual monitoring required
+- Complex to implement properly without tooling
+
+**Automated Canary with Flagger:**
+
+[Flagger](https://flagger.app/) is a progressive delivery tool that automates canary deployments for Flux.
+
+```yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: myapp
+  namespace: production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp
+  service:
+    port: 80
+  analysis:
+    interval: 1m
+    threshold: 5         # Rollback after 5 failed checks
+    maxWeight: 50        # Max 50% traffic to canary
+    stepWeight: 10       # Increase by 10% each step
+    metrics:
+      - name: request-success-rate
+        thresholdRange:
+          min: 99        # Must maintain 99% success rate
+      - name: request-duration
+        thresholdRange:
+          max: 500       # Max 500ms latency
+  webhooks:
+    - name: load-test
+      url: http://flagger-loadtester/
+      metadata:
+        cmd: "hey -z 1m -q 10 -c 2 http://myapp-canary/"
+```
+
+**How Flagger works:**
+1. Detects Deployment change (new image)
+2. Creates canary deployment with new version
+3. Gradually shifts traffic: 0% → 10% → 20% → 30% → 40% → 50%
+4. At each step, checks metrics from Prometheus
+5. If metrics good: continue progression
+6. If metrics bad: automatic rollback
+7. On success: promotes canary to stable, deletes canary deployment
+
+**Use when:**
+- High-traffic production applications
+- Want to minimize blast radius
+- Have metrics/observability in place
+- Can afford complexity of canary infrastructure
+- Need automated rollback based on metrics
+
+**Flagger + Flux Integration:**
+```bash
+# Install Flagger via Flux
+flux create source helm flagger \
+  --url=https://flagger.app \
+  --namespace=flux-system \
+  --export > kubernetes/apps/flagger/helmrepository.yaml
+
+flux create helmrelease flagger \
+  --source=HelmRepository/flagger \
+  --chart=flagger \
+  --namespace=flux-system \
+  --export > kubernetes/apps/flagger/helmrelease.yaml
+```
+
+**Interview tip:** "Canary is gradual traffic shifting with automated metrics checks. Manual canary is hard to get right. Flagger automates it with Prometheus integration. Netflix and Google use canary heavily."
+
+---
+
+### A/B Testing
+
+**How it works:**
+1. Run two versions simultaneously (A and B)
+2. Route traffic based on user attributes (header, cookie, geolocation)
+3. Measure business metrics (conversion, engagement)
+4. Keep the winning version
+
+**Key difference from Canary:** A/B testing is about **business metrics** and **user segmentation**, not just technical health.
+
+**Implementation (requires Service Mesh or Ingress):**
+
+**With Istio VirtualService:**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp
+spec:
+  hosts:
+    - myapp
+  http:
+    - match:
+        - headers:
+            user-type:
+              exact: premium    # Premium users see version B
+      route:
+        - destination:
+            host: myapp
+            subset: version-b
+    - route:
+        - destination:
+            host: myapp
+            subset: version-a  # Everyone else sees version A
+```
+
+**With Nginx Ingress (cookie-based):**
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-ab
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-by-cookie: "ab_test"
+    nginx.ingress.kubernetes.io/canary-by-cookie-value: "version-b"
+spec:
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp-version-b
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-main
+spec:
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp-version-a
+                port:
+                  number: 80
+```
+
+**Pros:**
+- Test business hypotheses with real users
+- Precise traffic control based on attributes
+- Multiple versions can run for extended periods
+- Data-driven decision making
+
+**Cons:**
+- Requires service mesh or advanced ingress controller
+- Complex analytics infrastructure needed
+- Operational overhead (multiple versions in production)
+- Not about deployment—about feature experimentation
+
+**Use when:**
+- Testing UX changes (button color, layout)
+- Feature flag rollout to specific user segments
+- Need business metrics, not just technical health
+- Have service mesh infrastructure
+
+**Interview tip:** "A/B testing is about user segmentation and business metrics, not deployment health. Often confused with canary, but canary is technical rollout, A/B is business experimentation. Requires service mesh like Istio or smart ingress."
+
+---
+
+### Strategy Comparison Table
+
+| Strategy | Downtime | Resource Cost | Rollback Speed | Complexity | Traffic Control | Use Case |
+|----------|----------|---------------|----------------|------------|-----------------|----------|
+| **Recreate** | Yes | 1x | Slow (redeploy) | Low | N/A | Dev/test, stateful apps |
+| **Rolling Update** | No | 1x + small surge | Medium (gradual) | Low | None (pod-based) | Standard web apps |
+| **Blue-Green** | No | 2x | Instant | Medium | Instant switch | High-risk deploys |
+| **Canary** | No | 1x + canary pods | Fast (delete canary) | High | Gradual % shift | Production apps with metrics |
+| **A/B Testing** | No | 1x per variant | N/A (not for rollback) | High | User attribute-based | Feature experimentation |
+
+---
+
+### Implementation Decision Tree
+
+```
+Do you need zero downtime?
+├─ No → Use Recreate (simplest)
+└─ Yes
+   ├─ Can versions run together?
+   │  ├─ No → Use Blue-Green (instant switch, but 2x cost)
+   │  └─ Yes
+   │     ├─ Need gradual rollout with metrics?
+   │     │  ├─ Yes → Use Canary (with Flagger for automation)
+   │     │  └─ No → Use Rolling Update (Kubernetes default)
+   │     └─ Need user segmentation for business metrics?
+   │        └─ Yes → Use A/B Testing (requires service mesh)
+```
+
+---
+
+### Deployment Strategies in Your Setup
+
+**Current state:** Your GitOps setup uses **Rolling Update** (Kubernetes default) for all applications deployed via Helm:
+- Prometheus: Rolling update with default settings
+- Grafana: Rolling update with default settings
+- hello-gitops: Rolling update with default settings
+
+**How to change strategy in HelmRelease:**
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: myapp
+  namespace: production
+spec:
+  chart:
+    spec:
+      chart: ./charts/myapp
+  values:
+    # Override deployment strategy
+    strategy:
+      type: Recreate  # or RollingUpdate
+      # rollingUpdate:  # Only for RollingUpdate
+      #   maxSurge: 1
+      #   maxUnavailable: 0
+```
+
+**Note:** This requires your chart's `deployment.yaml` template to respect `{{ .Values.strategy }}`. Most standard charts (including helm create scaffold) support this.
+
+---
+
+### Interview Questions on Deployment Strategies
+
+**Q: What deployment strategy does Kubernetes use by default?**
+
+A: Rolling Update with `maxSurge: 25%` and `maxUnavailable: 25%`. This means during rollout, you can have up to 25% extra pods, and at most 25% can be unavailable.
+
+---
+
+**Q: When would you choose Blue-Green over Canary?**
+
+A:
+- **Blue-Green**: When you need instant rollback, can afford 2x resources, and want to fully test the new version before any user sees it. Common in regulated industries (finance, healthcare).
+- **Canary**: When you want to expose real users to new version gradually, have good observability, and want to minimize resource overhead.
+
+---
+
+**Q: How would you implement Blue-Green deployments in your GitOps setup?**
+
+A:
+1. Create two HelmReleases: `myapp-blue` and `myapp-green`
+2. Both reference the same chart but with different values (especially image tag and version label)
+3. Create a Service with a selector that matches only one version
+4. To switch: update Service selector in Git, Flux reconciles within minutes
+5. For instant switch: manually patch the Service, then update Git
+
+Alternatively, use Flagger's Blue-Green mode for automation.
+
+---
+
+**Q: What's the difference between Canary deployments and A/B testing?**
+
+A:
+| Aspect | Canary | A/B Testing |
+|--------|--------|-------------|
+| **Purpose** | Safe rollout, technical validation | Feature experimentation, business validation |
+| **Metrics** | Error rate, latency, resource usage | Conversion rate, engagement, revenue |
+| **Duration** | Minutes to hours | Days to weeks |
+| **Goal** | Deploy new version safely | Choose best feature variant |
+| **Rollback** | Yes (if metrics fail) | No rollback—pick winner based on data |
+| **Traffic split** | Percentage-based (10%, 50%) | User attribute-based (location, device) |
+
+---
+
+## 6. Secrets Management
+
+### The Challenge: Why Secrets Are Hard in GitOps
+
+GitOps principle: **Everything in Git**. But secrets break this:
+
+```yaml
+# THIS IS TERRIBLE (never do this)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: database-password
+data:
+  password: cGFzc3dvcmQxMjM=  # base64 encoded, NOT encrypted
+```
+
+**Problems:**
+1. **Base64 is encoding, not encryption**: Anyone with Git access can decode
+2. **Git history is forever**: Even if you delete the secret, it's in history
+3. **Compliance violations**: PCI-DSS, HIPAA, SOC2 prohibit secrets in version control
+4. **Access control**: Git access = secret access (no granular permissions)
+
+**The dilemma:**
+- GitOps wants everything in Git
+- Security wants secrets out of Git
+
+**Solution:** Store encrypted or external references in Git, decrypt only in the cluster.
+
+---
+
+### Solutions Overview
+
+| Solution | How it works | Encryption | Secret storage | Complexity |
+|----------|--------------|------------|----------------|------------|
+| **Sealed Secrets** | Encrypt secrets, store encrypted in Git | Asymmetric (public/private key) | Git (encrypted) | Low |
+| **SOPS** | Encrypt YAML values, store in Git | KMS (AWS/GCP/Azure) or PGP | Git (encrypted) | Medium |
+| **External Secrets Operator** | Reference external secret managers | N/A (managed by provider) | Vault, AWS Secrets Manager, GCP Secret Manager | Medium-High |
+
+---
+
+### Sealed Secrets
+
+**Concept:** Encrypt secrets with a public key, store encrypted version in Git. Only the cluster has the private key to decrypt.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Developer encrypts secret with PUBLIC key                    │
+│    kubeseal --cert=public-key.pem < secret.yaml > sealed.yaml   │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. Commit SealedSecret (encrypted) to Git                       │
+│    apiVersion: bitnami.com/v1alpha1                             │
+│    kind: SealedSecret                                           │
+│    spec:                                                        │
+│      encryptedData:                                             │
+│        password: AgBv8dH2... (encrypted, safe to commit)        │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. Flux applies SealedSecret to cluster                         │
+│    Sealed Secrets controller decrypts with PRIVATE key          │
+│    Creates normal Secret in cluster                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Installation with Flux:**
+
+```bash
+# Create HelmRepository
+flux create source helm sealed-secrets \
+  --url=https://bitnami-labs.github.io/sealed-secrets \
+  --namespace=flux-system \
+  --export > kubernetes/apps/sealed-secrets/helmrepository.yaml
+
+# Create HelmRelease
+flux create helmrelease sealed-secrets \
+  --source=HelmRepository/sealed-secrets \
+  --chart=sealed-secrets \
+  --namespace=kube-system \
+  --export > kubernetes/apps/sealed-secrets/helmrelease.yaml
+```
+
+**Install kubeseal CLI:**
+```bash
+# macOS
+brew install kubeseal
+
+# Linux
+wget https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.24.0/kubeseal-0.24.0-linux-amd64.tar.gz
+tar xfz kubeseal-0.24.0-linux-amd64.tar.gz
+sudo install -m 755 kubeseal /usr/local/bin/kubeseal
+```
+
+**Usage:**
+
+```bash
+# 1. Create normal Secret (DO NOT COMMIT THIS)
+kubectl create secret generic db-password \
+  --from-literal=password=supersecret \
+  --dry-run=client -o yaml > secret.yaml
+
+# 2. Fetch public key from cluster
+kubeseal --fetch-cert > public-key.pem
+
+# 3. Seal the secret (encrypt)
+kubeseal --cert=public-key.pem < secret.yaml > sealed-secret.yaml
+
+# 4. Commit sealed-secret.yaml to Git
+git add sealed-secret.yaml
+git commit -m "Add sealed database password"
+git push
+
+# 5. Flux applies, Sealed Secrets controller decrypts in cluster
+# Result: normal Secret "db-password" exists in cluster
+```
+
+**SealedSecret YAML example:**
+
+```yaml
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: db-password
+  namespace: production
+spec:
+  encryptedData:
+    password: AgBv8dH2Pq3fJ9... # Long encrypted string (safe in Git)
+  template:
+    metadata:
+      name: db-password
+    type: Opaque
+```
+
+**After applying, normal Secret is created:**
+
+```bash
+$ kubectl get secret db-password -n production -o yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-password
+  ownerReferences:
+    - apiVersion: bitnami.com/v1alpha1
+      kind: SealedSecret
+      name: db-password
+data:
+  password: c3VwZXJzZWNyZXQ=  # base64 encoded "supersecret"
+```
+
+**Pros:**
+- Simple mental model: encrypt before commit
+- No external dependencies (no KMS)
+- Works with any Kubernetes cluster
+- Fast decryption (local to cluster)
+
+**Cons:**
+- Private key is in cluster (if cluster compromised, secrets exposed)
+- Rotating encryption key is complex
+- No audit trail of secret access
+- Secret values not sharable across clusters (each needs re-encryption)
+
+**Use when:**
+- Getting started with GitOps secrets
+- No cloud KMS available
+- Single cluster setup
+- Want simplicity over enterprise features
+
+---
+
+### SOPS (Secrets OPerationS) with Flux
+
+**Concept:** Encrypt specific values in YAML files using cloud KMS or PGP. Store encrypted YAML in Git. Flux decrypts using KMS during reconciliation.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Developer encrypts with SOPS + KMS                           │
+│    sops --encrypt --gcp-kms projects/my-project/keyRings/...    │
+│    secret.yaml > secret.enc.yaml                                │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. Commit encrypted YAML to Git                                 │
+│    apiVersion: v1                                               │
+│    kind: Secret                                                 │
+│    data:                                                        │
+│      password: ENC[AES256_GCM,data:xyz...,type:str]  ← encrypted│
+│    sops:                                                        │
+│      kms:                                                       │
+│        - arn: arn:aws:kms:...                                   │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. Flux Kustomization decrypts using KMS                        │
+│    spec:                                                        │
+│      decryption:                                                │
+│        provider: sops                                           │
+│        secretRef:                                               │
+│          name: sops-kms  # KMS credentials                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Installation:**
+
+```bash
+# Install SOPS CLI
+# macOS
+brew install sops
+
+# Linux
+wget https://github.com/mozilla/sops/releases/download/v3.8.1/sops-v3.8.1.linux.amd64
+sudo mv sops-v3.8.1.linux.amd64 /usr/local/bin/sops
+sudo chmod +x /usr/local/bin/sops
+```
+
+**Setup with GCP KMS:**
+
+```bash
+# 1. Create KMS key ring and key
+gcloud kms keyrings create sops --location=global
+gcloud kms keys create sops-key --location=global --keyring=sops --purpose=encryption
+
+# 2. Create .sops.yaml config (in repo root)
+cat > .sops.yaml << EOF
+creation_rules:
+  - path_regex: kubernetes/.*\.yaml$
+    gcp_kms: projects/my-project/locations/global/keyRings/sops/cryptoKeys/sops-key
+EOF
+
+# 3. Encrypt a secret
+kubectl create secret generic db-password \
+  --from-literal=password=supersecret \
+  --dry-run=client -o yaml | sops --encrypt /dev/stdin > secret.enc.yaml
+
+# 4. Commit encrypted file
+git add secret.enc.yaml .sops.yaml
+git commit -m "Add encrypted database password"
+```
+
+**Example encrypted file:**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+    name: db-password
+type: Opaque
+data:
+    password: ENC[AES256_GCM,data:Tr7o1,type:str]
+sops:
+    kms:
+    -   arn: ""
+        created_at: "2024-01-15T10:30:00Z"
+        enc: CiC...
+        gcp_kms: projects/my-project/locations/global/keyRings/sops/cryptoKeys/sops-key
+    version: 3.8.1
+```
+
+**Configure Flux to decrypt:**
+
+```yaml
+# Create ServiceAccount with KMS access (via Workload Identity or Secret)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-sops
+  namespace: flux-system
+  annotations:
+    iam.gke.io/gcp-service-account: flux-sops@my-project.iam.gserviceaccount.com
+---
+# Update Kustomization to use SOPS decryption
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: flux-system
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./kubernetes
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-kms  # Optional: KMS credentials if not using Workload Identity
+```
+
+**Edit encrypted files:**
+
+```bash
+# Edit in-place (decrypts, opens editor, re-encrypts on save)
+sops secret.enc.yaml
+
+# Decrypt to view
+sops --decrypt secret.enc.yaml
+
+# Rotate keys (re-encrypt with new KMS key)
+sops --rotate --in-place secret.enc.yaml
+```
+
+**Pros:**
+- Cloud KMS provides enterprise-grade encryption
+- Audit trail via KMS (who accessed keys, when)
+- Key rotation built-in
+- Can encrypt specific fields (not whole file)
+- Same encrypted file works across clusters (if KMS access granted)
+- PGP option for non-cloud scenarios
+
+**Cons:**
+- Requires cloud KMS or PGP key management
+- More complex than Sealed Secrets
+- KMS API calls add latency (minimal)
+- Need to manage KMS permissions
+
+**Use when:**
+- Already using cloud provider (AWS/GCP/Azure)
+- Need audit trail and compliance
+- Multi-cluster with centralized KMS
+- Want fine-grained field encryption
+- Enterprise security requirements
+
+---
+
+### External Secrets Operator
+
+**Concept:** Store secrets in external secret manager (Vault, AWS Secrets Manager, GCP Secret Manager). Store **reference** in Git. ESO syncs external secret to Kubernetes Secret.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Store secret in external system (e.g., GCP Secret Manager)   │
+│    $ gcloud secrets create db-password --data-file=-             │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. Commit ExternalSecret (reference) to Git                     │
+│    apiVersion: external-secrets.io/v1beta1                      │
+│    kind: ExternalSecret                                         │
+│    spec:                                                        │
+│      secretStoreRef:                                            │
+│        name: gcp-secret-manager                                 │
+│      data:                                                      │
+│        - secretKey: password                                    │
+│          remoteRef:                                             │
+│            key: db-password  ← reference, not actual secret     │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. ESO fetches from GCP Secret Manager, creates K8s Secret      │
+│    External Secrets Operator polls external system              │
+│    Creates/updates Secret in cluster                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Installation:**
+
+```yaml
+# kubernetes/apps/external-secrets/helmrepository.yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: external-secrets
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.external-secrets.io
+---
+# kubernetes/apps/external-secrets/helmrelease.yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: external-secrets
+      sourceRef:
+        kind: HelmRepository
+        name: external-secrets
+        namespace: flux-system
+```
+
+**Setup SecretStore (GCP example):**
+
+```yaml
+# Configure how to access GCP Secret Manager
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: gcp-secret-manager
+  namespace: production
+spec:
+  provider:
+    gcpsm:
+      projectID: my-gcp-project
+      auth:
+        workloadIdentity:
+          clusterLocation: us-central1
+          clusterName: my-gke-cluster
+          serviceAccountRef:
+            name: external-secrets-sa
+```
+
+**Create ExternalSecret:**
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: db-password
+  namespace: production
+spec:
+  refreshInterval: 1h  # Sync from external system every hour
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: SecretStore
+  target:
+    name: db-password  # Name of K8s Secret to create
+    creationPolicy: Owner
+  data:
+    - secretKey: password      # Key in K8s Secret
+      remoteRef:
+        key: db-password       # Secret name in GCP Secret Manager
+```
+
+**Result:** ESO creates this Secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-password
+  namespace: production
+  ownerReferences:
+    - apiVersion: external-secrets.io/v1beta1
+      kind: ExternalSecret
+      name: db-password
+data:
+  password: c3VwZXJzZWNyZXQ=  # Fetched from GCP Secret Manager
+```
+
+**Pros:**
+- Centralized secret management (single source of truth)
+- Secrets never in Git (even encrypted)
+- Native integration with cloud secret managers
+- Automatic rotation (when external secret updates)
+- Granular access control via IAM
+- Audit trail via secret manager
+- Works with Vault, AWS, GCP, Azure, 1Password, etc.
+
+**Cons:**
+- External dependency (secret manager must be available)
+- More complex infrastructure
+- Costs (secret manager pricing)
+- Network calls to fetch secrets (latency)
+- Cluster needs IAM permissions
+
+**Supported backends:**
+- AWS Secrets Manager / Parameter Store
+- GCP Secret Manager
+- Azure Key Vault
+- HashiCorp Vault
+- 1Password
+- Doppler
+- Many more...
+
+**Use when:**
+- Already using Vault or cloud secret manager
+- Need centralized secret management across multiple clusters
+- Want automatic secret rotation
+- Enterprise with strict secret policies
+- Multi-cloud or hybrid cloud
+
+---
+
+### Comparison Summary
+
+| Aspect | Sealed Secrets | SOPS | External Secrets Operator |
+|--------|----------------|------|---------------------------|
+| **Secret location** | Git (encrypted) | Git (encrypted) | External system |
+| **Encryption** | Asymmetric (RSA) | KMS or PGP | N/A (managed externally) |
+| **Decryption** | In-cluster controller | Flux with KMS | ESO fetches from external |
+| **Key management** | Cluster holds private key | Cloud KMS or PGP | External system IAM |
+| **Secret rotation** | Manual (re-seal) | Manual (re-encrypt) | Automatic (when external updates) |
+| **Audit trail** | No | Yes (via KMS) | Yes (via secret manager) |
+| **Multi-cluster** | Re-encrypt per cluster | Same file, grant KMS access | Same reference, grant IAM access |
+| **External dependency** | None | KMS API | Secret manager API |
+| **Complexity** | Low | Medium | Medium-High |
+| **Cost** | Free | KMS costs | Secret manager costs |
+
+---
+
+### Best Practices for Secrets in GitOps
+
+1. **Never commit plaintext secrets**: Not even in initial commits. Git history is forever.
+
+2. **Use .gitignore for local secret files:**
+   ```
+   # .gitignore
+   secret.yaml
+   *.unsealed.yaml
+   *.dec.yaml
+   ```
+
+3. **Separate secret encryption from secret values:**
+   - Developers encrypt secrets with public key (Sealed Secrets) or KMS (SOPS)
+   - Developers don't need access to decryption keys or production secret values
+
+4. **Rotation strategy:**
+   - **Sealed Secrets**: Re-seal with new public key after controller restart
+   - **SOPS**: `sops --rotate` to re-encrypt with new KMS key
+   - **ESO**: Rotate in external system, ESO syncs automatically
+
+5. **Least privilege:**
+   - Flux ServiceAccount: read-only Git access
+   - Secret decryption: only needs KMS decrypt permission (SOPS) or secret manager read (ESO)
+   - Developers: encrypt access only, not decrypt
+
+6. **Secret naming conventions:**
+   ```
+   my-secret.enc.yaml         # SOPS encrypted
+   my-secret.sealed.yaml      # Sealed Secret
+   my-secret-external.yaml    # ExternalSecret reference
+   ```
+
+7. **Don't encrypt entire files with SOPS:**
+   ```yaml
+   # Bad: metadata encrypted (hard to review PRs)
+   apiVersion: ENC[...]
+
+   # Good: only secret data encrypted
+   apiVersion: v1
+   kind: Secret
+   data:
+     password: ENC[AES256_GCM,data:xyz,type:str]
+   ```
+
+8. **Use different encryption keys per environment:**
+   ```yaml
+   # .sops.yaml
+   creation_rules:
+     - path_regex: kubernetes/production/.*
+       gcp_kms: projects/prod-project/locations/global/keyRings/sops/cryptoKeys/prod-key
+     - path_regex: kubernetes/staging/.*
+       gcp_kms: projects/staging-project/locations/global/keyRings/sops/cryptoKeys/staging-key
+   ```
+
+9. **Emergency access pattern:**
+   - Store sealed secrets controller private key in secure vault
+   - Document procedure to restore from backup
+   - Test disaster recovery periodically
+
+10. **Secret validation:**
+    - Use pre-commit hooks to prevent plaintext secrets
+    - Tools: `gitleaks`, `trufflehog`, `detect-secrets`
+    ```bash
+    # Install pre-commit hook
+    pip install pre-commit
+    pre-commit install
+
+    # .pre-commit-config.yaml
+    repos:
+      - repo: https://github.com/trufflesecurity/trufflehog
+        rev: v3.63.2
+        hooks:
+          - id: trufflehog
+    ```
+
+---
+
+### Migration Path: From One Solution to Another
+
+**Sealed Secrets → SOPS:**
+1. Install SOPS, configure KMS
+2. Add `decryption` to Flux Kustomization
+3. Create SOPS-encrypted versions of secrets
+4. Update Git references
+5. Delete SealedSecrets after validation
+6. Remove Sealed Secrets controller
+
+**SOPS → External Secrets:**
+1. Install ESO, configure SecretStore
+2. Migrate secrets to external secret manager
+3. Create ExternalSecrets referencing external secrets
+4. Remove SOPS-encrypted files after validation
+5. Remove `decryption` from Kustomization
+
+**Dual-run during migration:** Both old and new secrets can coexist temporarily (different names) for safe testing.
+
+---
+
+### Your Setup: Adding Secrets Management
+
+**Recommendation for your showcase:** Start with Sealed Secrets (simplicity) or SOPS with GCP KMS (since you're on GCP).
+
+**Quick start with Sealed Secrets:**
+
+```bash
+# 1. Add Sealed Secrets via Flux
+mkdir -p kubernetes/apps/sealed-secrets
+
+flux create source helm sealed-secrets \
+  --url=https://bitnami-labs.github.io/sealed-secrets \
+  --namespace=flux-system \
+  --export > kubernetes/apps/sealed-secrets/helmrepository.yaml
+
+flux create helmrelease sealed-secrets \
+  --source=HelmRepository/sealed-secrets \
+  --chart=sealed-secrets \
+  --namespace=kube-system \
+  --export > kubernetes/apps/sealed-secrets/helmrelease.yaml
+
+# 2. Create kustomization.yaml
+cat > kubernetes/apps/sealed-secrets/kustomization.yaml << EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrepository.yaml
+  - helmrelease.yaml
+EOF
+
+# 3. Add to apps kustomization
+cd kubernetes/apps && kustomize edit add resource sealed-secrets && cd ../..
+
+# 4. Commit and push
+git add kubernetes/apps/sealed-secrets/ kubernetes/apps/kustomization.yaml
+git commit -m "Add Sealed Secrets for secret management"
+git push
+
+# 5. Wait for deployment, then seal a secret
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sealed-secrets -n kube-system --timeout=300s
+
+# 6. Create and seal a test secret
+echo -n supersecret | kubectl create secret generic test-secret \
+  --from-file=password=/dev/stdin \
+  --dry-run=client -o yaml | kubeseal -o yaml > test-sealed.yaml
+
+# 7. Commit sealed secret to Git
+git add test-sealed.yaml && git commit -m "Add test sealed secret" && git push
+```
+
+---
+
+### Old Interview Questions (From Original Section 5)
+
+#### GitHub Actions
 
 **Q: Explain your CI/CD workflow. What triggers deployments?**
 
@@ -2463,7 +3731,7 @@ A: Separation of concerns:
 - **HelmRepositories** are shared infrastructure - any HelmRelease can reference them. Placing them in `flux-system` makes them available cluster-wide.
 - **HelmReleases** are application-specific and deploy to their target namespace (`monitoring`). The namespace in the HelmRelease metadata determines where the Helm chart resources are created.
 
-The `sourceRef` in HelmRelease explicitly specifies `namespace: flux-system` to find the HelmRepository.
+**Important:** The `sourceRef` in HelmRelease must explicitly specify `namespace: flux-system` to find the HelmRepository in a different namespace. If omitted, Flux looks in the same namespace as the HelmRelease.
 
 ---
 
@@ -2705,6 +3973,408 @@ name: {{ include "myapp.fullname" . }}
 
 ---
 
+### Deployment Strategies
+
+**Q: What's the difference between Rolling Update and Blue-Green deployment?**
+
+A:
+| Aspect | Rolling Update | Blue-Green |
+|--------|----------------|------------|
+| **Downtime** | Zero | Zero |
+| **Resource cost** | 1x + small surge | 2x (full duplicate) |
+| **Version mixing** | Yes (gradual) | No (instant switch) |
+| **Rollback speed** | Medium (gradual) | Instant (switch back) |
+| **Traffic control** | Pod-based (indirect) | Service selector (direct) |
+
+Rolling Update is Kubernetes default—good for standard apps. Blue-Green is for high-risk deployments needing instant rollback but costs double resources.
+
+---
+
+**Q: When would you use Canary over Blue-Green?**
+
+A:
+- **Canary**: When you want to test with a small percentage of real users first, have good metrics/monitoring, and want to minimize blast radius. Common in high-traffic production apps.
+- **Blue-Green**: When you need instant switchover, can afford 2x resources, and want full testing before any user exposure. Common in regulated industries.
+
+Canary is gradual risk reduction with metrics-based decisions. Blue-Green is binary switch with instant rollback.
+
+---
+
+**Q: How would you implement Blue-Green deployments in your GitOps setup?**
+
+A: Two approaches:
+
+**Approach 1: Two HelmReleases**
+```yaml
+# Create myapp-blue and myapp-green HelmReleases
+# Use different image tags and version labels
+# Service selector points to blue or green
+# To switch: edit Service selector in Git, push
+```
+
+**Approach 2: Flagger (automated)**
+```yaml
+# Install Flagger via Flux
+# Create Flagger Canary resource with analysis.type: BlueGreen
+# Flagger automates traffic switch based on metrics
+```
+
+Manual approach gives full control. Flagger automates based on health checks.
+
+---
+
+**Q: Explain how Canary deployments work with Flagger.**
+
+A: Flagger automates progressive delivery:
+1. Detects Deployment image change
+2. Creates canary deployment with new version
+3. Gradually shifts traffic: 0% → 10% → 20% → ... → 50%
+4. At each step, queries Prometheus for metrics (error rate, latency)
+5. If metrics good: continue progression
+6. If metrics bad: automatic rollback
+7. On success: promotes canary to primary, deletes canary
+
+This removes manual intervention and ensures metrics-based rollout.
+
+---
+
+### Secrets Management
+
+**Q: How do you handle secrets in GitOps? You can't commit them to Git.**
+
+A: Three main approaches:
+
+**1. Sealed Secrets** (simplest):
+- Encrypt secrets with public key (kubeseal)
+- Commit encrypted SealedSecret to Git
+- Controller in cluster decrypts with private key
+- Good for: Single cluster, getting started
+
+**2. SOPS** (enterprise):
+- Encrypt YAML values with cloud KMS (AWS/GCP/Azure) or PGP
+- Commit encrypted YAML to Git
+- Flux decrypts during reconciliation using KMS
+- Good for: Multi-cloud, audit requirements, key rotation
+
+**3. External Secrets Operator** (centralized):
+- Store secrets in external system (Vault, AWS Secrets Manager, GCP Secret Manager)
+- Commit reference (not secret) to Git
+- ESO fetches and syncs to Kubernetes Secret
+- Good for: Centralized secret management, automatic rotation
+
+**Rule:** Never commit plaintext secrets. Always encrypt or externalize before committing.
+
+---
+
+**Q: What's the difference between Sealed Secrets and SOPS?**
+
+A:
+| Aspect | Sealed Secrets | SOPS |
+|--------|----------------|------|
+| **Encryption** | Asymmetric (RSA) in-cluster | KMS (AWS/GCP/Azure) or PGP |
+| **Decryption** | Sealed Secrets controller | Flux with KMS credentials |
+| **Key location** | Private key in cluster | Cloud KMS or PGP key |
+| **Audit trail** | No | Yes (via KMS logs) |
+| **Key rotation** | Manual (complex) | Built-in (`sops --rotate`) |
+| **Multi-cluster** | Re-encrypt per cluster | Same file, grant KMS access |
+
+Sealed Secrets: simpler, no external deps, good for single cluster.
+SOPS: enterprise-grade, audit trail, better for multi-cluster and compliance.
+
+---
+
+**Q: How would you migrate from plaintext secrets to Sealed Secrets in your setup?**
+
+A:
+1. Install Sealed Secrets via Flux HelmRelease
+2. For each plaintext secret:
+   ```bash
+   # Create secret YAML (don't commit)
+   kubectl create secret generic my-secret --from-literal=key=value \
+     --dry-run=client -o yaml > secret.yaml
+
+   # Seal it
+   kubeseal < secret.yaml > sealed-secret.yaml
+
+   # Commit sealed version
+   git add sealed-secret.yaml
+   ```
+3. Delete plaintext secrets from Git (and history: `git filter-branch`)
+4. Push changes
+5. Flux applies SealedSecrets, controller decrypts to normal Secrets
+
+**Important:** Clean Git history of old plaintext secrets—they're cached forever otherwise.
+
+---
+
+**Q: What are the security benefits of External Secrets Operator vs storing encrypted secrets in Git?**
+
+A:
+**External Secrets Operator advantages:**
+1. **Secrets never in Git**: Even encrypted secrets aren't in Git. Git compromise doesn't expose secret metadata.
+2. **Centralized rotation**: Rotate in secret manager, all clusters sync automatically
+3. **Granular IAM**: Fine-grained access control via cloud IAM
+4. **Audit trail**: Secret manager logs all access attempts
+5. **Compliance**: Meets requirements for storing secrets in certified systems (Vault, AWS Secrets Manager)
+
+**Trade-off:** External dependency. Secret manager outage means secrets don't sync.
+
+---
+
+### Troubleshooting
+
+**Q: A HelmRelease is stuck in "Installing" state. How do you troubleshoot?**
+
+A: Systematic approach:
+```bash
+# 1. Check HelmRelease status
+kubectl describe helmrelease <name> -n <namespace>
+
+# 2. Check intermediate HelmChart
+kubectl get helmcharts -n flux-system
+kubectl describe helmchart <namespace>-<name> -n flux-system
+
+# 3. Check HelmRepository is ready
+flux get sources helm -A
+
+# 4. Check underlying Helm status
+helm list -n <namespace>
+helm status <name> -n <namespace>
+
+# 5. Check pod status (if Helm installed but pods failing)
+kubectl get pods -n <namespace>
+kubectl describe pod <pod-name> -n <namespace>
+
+# 6. Check controller logs
+kubectl logs -n flux-system deploy/helm-controller
+```
+
+**Common causes:** HelmRepository URL wrong, chart version doesn't exist, invalid values, resource conflicts, RBAC issues.
+
+---
+
+**Q: How do you prevent unauthorized changes to the cluster in a GitOps setup?**
+
+A: Multiple layers:
+
+**1. Pull-based model:**
+- Nothing pushes to cluster from outside
+- Only Flux (in-cluster) applies changes
+- Attackers can't inject via CI/CD
+
+**2. RBAC on Flux ServiceAccount:**
+- Limit what Flux can deploy
+- Namespace-scoped permissions
+- Use separate ServiceAccounts per Kustomization
+
+**3. Git-based controls:**
+- Branch protection: require PR reviews
+- CODEOWNERS: require approval from specific teams
+- Signed commits: verify commit author
+
+**4. Policy enforcement:**
+- Kyverno/OPA Gatekeeper: validate resources before apply
+- Example: block privileged pods, require resource limits
+
+**5. Audit logging:**
+- Kubernetes audit logs: track all API calls
+- Git history: track all changes with author attribution
+
+**Result:** All changes flow through Git with review + approval. Direct kubectl changes are reverted by Flux.
+
+---
+
+**Q: What are the performance implications of Flux reconciliation intervals?**
+
+A: Trade-off between responsiveness and API load:
+
+**Short intervals (1m GitRepository, 5m HelmRelease):**
+- **Pros:** Changes applied faster, drift corrected quickly
+- **Cons:** More API calls (Git, Kubernetes), higher CPU usage
+
+**Long intervals (10m GitRepository, 30m HelmRelease):**
+- **Pros:** Lower resource usage, less API load
+- **Cons:** Slower change propagation, drift persists longer
+
+**Your setup:**
+- GitRepository: 1m (Git polling - cheap operation)
+- Kustomization: 10m (good balance)
+- HelmRelease: 5m (good balance)
+
+**Best practices:**
+- GitRepository: 1-5m (cheap to poll)
+- Kustomization: 5-10m (moderate cost)
+- HelmRelease: 5-15m (Helm operations expensive)
+- Use `flux reconcile` for immediate deployment (don't wait)
+
+**At scale:** 1000 HelmReleases reconciling every 5m = 200 reconciliations/min. Monitor controller resource usage.
+
+---
+
+**Q: Explain Flux's dependency management with dependsOn.**
+
+A: `dependsOn` ensures resources are applied in order.
+
+**Example:**
+```yaml
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+spec:
+  interval: 10m
+  path: ./infrastructure
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: applications
+spec:
+  interval: 10m
+  path: ./applications
+  dependsOn:
+    - name: infrastructure  # Wait for infrastructure first
+```
+
+**Flow:**
+1. Flux applies `infrastructure` Kustomization
+2. Waits for `infrastructure` to be Ready
+3. Then applies `applications` Kustomization
+
+**Use cases:**
+- CRDs before CRs (install operator before custom resources)
+- Namespaces before resources (create namespace before deploying to it)
+- Secrets before apps (ensure secrets exist before app references them)
+- Infrastructure before apps (networking, storage, then applications)
+
+**Your setup:** Currently flat (no dependsOn). Could add:
+```yaml
+# prometheus depends on monitoring namespace existing
+dependsOn:
+  - name: namespaces
+```
+
+---
+
+**Q: How do you monitor GitOps health? What metrics matter?**
+
+A: Key areas to monitor:
+
+**1. Reconciliation health:**
+```promql
+# Resources not Ready
+gotk_reconcile_condition{status="False",type="Ready"}
+
+# Reconciliation duration (detect slowness)
+gotk_reconcile_duration_seconds_bucket
+
+# Suspended resources (should be 0)
+gotk_suspend_status == 1
+```
+
+**2. Git connectivity:**
+```promql
+# GitRepository fetch failures
+sum(rate(gotk_reconcile_condition{kind="GitRepository",status="False"}[5m]))
+```
+
+**3. HelmRelease failures:**
+```promql
+# Failed HelmReleases
+count(gotk_reconcile_condition{kind="HelmRelease",status="False"})
+```
+
+**4. Controller health:**
+```bash
+# Controller pod restarts (should be 0)
+kubectl get pods -n flux-system
+```
+
+**Grafana dashboards:**
+- Import 15798 (Flux Cluster Stats)
+- Import 15800 (Flux Control Plane)
+
+**Alerts:**
+```yaml
+- alert: FluxReconciliationFailed
+  expr: gotk_reconcile_condition{status="False"} == 1
+  for: 10m
+  annotations:
+    summary: "Flux {{ $labels.kind }}/{{ $labels.name }} failing"
+```
+
+**Your setup:** Prometheus already installed. Add these metrics to monitoring!
+
+---
+
+**Q: What happens if Git is unavailable (GitHub outage)?**
+
+A: Designed for this scenario:
+
+**What keeps working:**
+- All applications keep running (no impact on uptime)
+- Flux reconciles from cached artifacts (Git content, Helm charts)
+- Self-healing still works (Flux corrects drift using last known state)
+
+**What stops working:**
+- New Git commits can't be fetched
+- Can't deploy new versions
+- Can't see latest changes
+
+**How long can it last?**
+- Indefinitely for existing resources
+- Until Git returns for new deployments
+
+**When Git returns:**
+```bash
+flux reconcile source git flux-system
+# Fetches all missed commits, applies changes
+```
+
+**Mitigation:**
+- **Git mirrors**: Use multiple Git servers (GitHub, GitLab mirror)
+- **OCI registries**: Store Flux artifacts in OCI as backup
+- **Emergency kubectl**: Direct cluster access (breaks GitOps but restores service)
+
+**Your setup:** If GitHub down for 1 hour, your cluster keeps running fine. When GitHub returns, Flux auto-catches up.
+
+---
+
+**Q: How do you handle HelmRelease rollbacks?**
+
+A: The GitOps way: rollback in Git.
+
+**Preferred method (GitOps):**
+```bash
+# Find the bad commit
+git log --oneline kubernetes/apps/myapp/
+
+# Revert it
+git revert <bad-commit-sha>
+git push
+
+# Flux automatically rolls back (within reconciliation interval)
+# Or force immediate:
+flux reconcile helmrelease myapp -n production
+```
+
+**Emergency method (imperative):**
+```bash
+# Helm rollback (bypasses GitOps)
+helm history myapp -n production
+helm rollback myapp <revision> -n production
+
+# Then update Git to match (restore GitOps)
+# Edit helmrelease.yaml to match rolled-back state
+git commit -am "Emergency rollback of myapp"
+git push
+```
+
+**Best practice:** Always prefer Git revert. Emergency Helm rollback is for "production is on fire" scenarios only.
+
+---
+
 ### GitOps Principles
 
 **Q: What are the core principles of GitOps and how does your setup implement them?**
@@ -2758,7 +4428,7 @@ In your setup: Flux's Kustomization reads the kustomize kustomization.yaml files
 
 ---
 
-## Quick Reference
+## 11. Quick Reference
 
 ### Your Repository Structure
 
@@ -2830,7 +4500,7 @@ git revert HEAD && git push
 
 ---
 
-## 6. Exposing Applications
+## 7. Exposing Applications
 
 ### LoadBalancer vs Ingress Trade-offs
 
@@ -2959,7 +4629,7 @@ In this GitOps showcase:
 
 ---
 
-## 7. Grafana Dashboard Provisioning
+## 8. Grafana Dashboard Provisioning
 
 ### Overview
 
@@ -3109,5 +4779,919 @@ flux reconcile helmrelease grafana -n monitoring
 - Check datasource config in `datasources.yaml` section
 
 ---
+
+## 9. Troubleshooting
+
+### Overview
+
+Troubleshooting Flux and GitOps deployments requires understanding the reconciliation loop and knowing where to look when things go wrong.
+
+**The Flux reconciliation flow:**
+```
+GitRepository → Kustomization → HelmRelease → Kubernetes Resources
+     ↓              ↓                ↓                ↓
+  Source        Kustomize        Helm            Actual
+Controller     Controller      Controller         Pods
+```
+
+Each component can fail independently. Troubleshooting means identifying which layer is broken.
+
+---
+
+### Diagnostic Commands Quick Reference
+
+```bash
+# Overview of all Flux resources
+flux get all -A
+
+# Check specific resource types
+flux get sources git -A          # GitRepository status
+flux get sources helm -A         # HelmRepository status
+flux get kustomizations -A       # Kustomization status
+flux get helmreleases -A         # HelmRelease status
+
+# Detailed status of specific resource
+flux get helmrelease prometheus -n monitoring
+kubectl describe helmrelease prometheus -n monitoring
+
+# Reconcile immediately (don't wait for interval)
+flux reconcile source git flux-system
+flux reconcile kustomization flux-system --with-source
+flux reconcile helmrelease prometheus -n monitoring
+
+# View logs
+flux logs --level=error                           # All errors
+flux logs --kind=HelmRelease --name=prometheus    # Specific resource
+kubectl logs -n flux-system deploy/helm-controller -f
+kubectl logs -n flux-system deploy/source-controller -f
+kubectl logs -n flux-system deploy/kustomize-controller -f
+
+# Events
+kubectl get events -n flux-system --sort-by='.lastTimestamp'
+kubectl get events -n monitoring --sort-by='.lastTimestamp'
+
+# Suspend/resume (for maintenance)
+flux suspend helmrelease prometheus -n monitoring
+flux resume helmrelease prometheus -n monitoring
+```
+
+---
+
+### Common Flux Issues and Solutions
+
+#### Issue 1: GitRepository Not Fetching
+
+**Symptoms:**
+```bash
+$ flux get sources git
+NAME        READY   MESSAGE
+flux-system False   failed to checkout and determine revision: unable to clone: authentication required
+```
+
+**Diagnosis:**
+```bash
+# Check GitRepository details
+kubectl describe gitrepository flux-system -n flux-system
+
+# Look for authentication errors in events
+kubectl get events -n flux-system | grep flux-system
+
+# Check if secret exists
+kubectl get secret flux-system -n flux-system
+
+# View secret (check if token is present)
+kubectl get secret flux-system -n flux-system -o yaml
+```
+
+**Common causes:**
+1. **Invalid GitHub token**: Token expired or lacks permissions
+2. **Wrong repository URL**: Typo in URL or repo doesn't exist
+3. **Network issues**: Cluster can't reach GitHub (firewall, DNS)
+4. **Branch doesn't exist**: Tracking non-existent branch
+
+**Solutions:**
+```bash
+# 1. Regenerate GitHub token
+# Go to GitHub → Settings → Developer settings → Personal access tokens
+# Create new token with "repo" scope
+# Update secret:
+kubectl create secret generic flux-system \
+  --from-literal=username=git \
+  --from-literal=password=<new-token> \
+  -n flux-system \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Fix repository URL
+kubectl edit gitrepository flux-system -n flux-system
+# Update spec.url to correct value
+
+# 3. Check branch
+kubectl edit gitrepository flux-system -n flux-system
+# Ensure spec.ref.branch matches your default branch (main/master)
+
+# 4. Force reconcile
+flux reconcile source git flux-system
+```
+
+**Note for your setup:** Terraform bootstrap creates the flux-system secret. If recreating manually, ensure token has same permissions.
+
+---
+
+#### Issue 2: Kustomization Build Failures
+
+**Symptoms:**
+```bash
+$ flux get kustomizations
+NAME        READY   MESSAGE
+flux-system False   kustomization build failed: accumulating resources: accumulation err='accumulating resources from 'apps': ...
+```
+
+**Diagnosis:**
+```bash
+# Get detailed error
+kubectl describe kustomization flux-system -n flux-system
+
+# Build locally to see exact error
+cd /path/to/gitops
+kustomize build kubernetes/
+
+# Check for common kustomize issues
+kubectl kustomize kubernetes/
+```
+
+**Common causes:**
+1. **Invalid YAML**: Syntax errors, incorrect indentation
+2. **Missing files**: kustomization.yaml references non-existent files
+3. **Invalid kustomization.yaml**: Wrong resources list, typos
+4. **Duplicate resources**: Same resource defined multiple times
+
+**Solutions:**
+```bash
+# 1. Validate YAML syntax
+yamllint kubernetes/
+
+# 2. Test kustomize build locally
+kustomize build kubernetes/ > /tmp/output.yaml
+# Review /tmp/output.yaml for issues
+
+# 3. Check file paths in kustomization.yaml
+cat kubernetes/apps/kustomization.yaml
+# Ensure all resources exist:
+ls -la kubernetes/apps/prometheus/
+ls -la kubernetes/apps/grafana/
+
+# 4. Fix and commit
+vim kubernetes/apps/kustomization.yaml
+git commit -am "Fix kustomization.yaml"
+git push
+flux reconcile kustomization flux-system --with-source
+```
+
+**Prevention:**
+- Use `kustomize build` locally before committing
+- CI/CD validation: `kustomize build kubernetes/ > /dev/null` in GitHub Actions
+- IDE plugins for YAML validation
+
+---
+
+#### Issue 3: HelmRelease Stuck in "Installing" State
+
+**Symptoms:**
+```bash
+$ flux get helmreleases -n monitoring
+NAME       READY   MESSAGE
+prometheus False   HelmChart 'flux-system/monitoring-prometheus' is not ready
+```
+
+**Diagnosis:**
+```bash
+# Check HelmRelease
+kubectl describe helmrelease prometheus -n monitoring
+
+# Check HelmChart (intermediate resource)
+kubectl get helmcharts -n flux-system
+kubectl describe helmchart monitoring-prometheus -n flux-system
+
+# Check if chart exists in HelmRepository
+flux get sources helm -A
+kubectl describe helmrepository prometheus-community -n flux-system
+
+# Check underlying Helm release
+helm list -n monitoring
+helm status prometheus -n monitoring
+```
+
+**Common causes:**
+1. **HelmRepository not ready**: Chart repo URL wrong or unreachable
+2. **Chart version doesn't exist**: Specified version not in repo
+3. **Invalid values**: Chart fails to render with provided values
+4. **Resource conflicts**: Trying to create resource that already exists
+5. **Insufficient permissions**: ServiceAccount lacks RBAC permissions
+
+**Solutions:**
+```bash
+# 1. Fix HelmRepository
+kubectl edit helmrepository prometheus-community -n flux-system
+# Verify URL: https://prometheus-community.github.io/helm-charts
+flux reconcile source helm prometheus-community -n flux-system
+
+# 2. Check chart version exists
+helm search repo prometheus-community/prometheus --versions
+# Update HelmRelease with valid version
+
+# 3. Test values locally
+helm template prometheus prometheus-community/prometheus \
+  -f /tmp/values.yaml \
+  --dry-run
+# Fix values if errors
+
+# 4. Delete conflicting resources
+kubectl delete deployment prometheus-server -n monitoring
+# Then reconcile HelmRelease
+
+# 5. Check RBAC (if using restricted ServiceAccount)
+kubectl auth can-i create deployments -n monitoring --as=system:serviceaccount:flux-system:helm-controller
+```
+
+**Force clean restart:**
+```bash
+# Suspend HelmRelease
+flux suspend helmrelease prometheus -n monitoring
+
+# Delete Helm release
+helm uninstall prometheus -n monitoring
+
+# Resume HelmRelease (Flux reinstalls)
+flux resume helmrelease prometheus -n monitoring
+```
+
+---
+
+#### Issue 4: HelmRelease Stuck in "Upgrading" State
+
+**Symptoms:**
+```bash
+$ flux get helmreleases -n monitoring
+NAME       READY   MESSAGE
+prometheus False   Helm upgrade failed: timed out waiting for the condition
+```
+
+**Diagnosis:**
+```bash
+# Check HelmRelease
+kubectl describe helmrelease prometheus -n monitoring
+
+# Check Helm status
+helm status prometheus -n monitoring
+
+# Check if pods are failing
+kubectl get pods -n monitoring
+kubectl describe pod prometheus-server-xxx -n monitoring
+kubectl logs -n monitoring prometheus-server-xxx
+
+# Check events
+kubectl get events -n monitoring --sort-by='.lastTimestamp'
+```
+
+**Common causes:**
+1. **Pods failing readiness/liveness probes**: New version unhealthy
+2. **Resource limits too low**: Pods OOMKilled or CPU throttled
+3. **Image pull failures**: Wrong image tag or registry auth issues
+4. **PVC mount issues**: Persistent volume problems
+5. **Init containers failing**: Pre-start tasks not completing
+
+**Solutions:**
+```bash
+# 1. Check pod status
+kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus
+kubectl describe pod <pod-name> -n monitoring
+
+# 2. Check logs
+kubectl logs -n monitoring <pod-name>
+kubectl logs -n monitoring <pod-name> --previous  # Previous crashed pod
+
+# 3. Check image pull
+kubectl get events -n monitoring | grep -i pull
+# If ImagePullBackOff, verify image exists:
+docker pull <image:tag>
+
+# 4. Increase resources in HelmRelease values
+# Edit kubernetes/apps/prometheus/helmrelease.yaml
+spec:
+  values:
+    server:
+      resources:
+        limits:
+          memory: 1Gi  # Increase from 512Mi
+        requests:
+          memory: 512Mi
+
+# 5. Rollback via Git
+git log --oneline kubernetes/apps/prometheus/
+git revert <bad-commit>
+git push
+```
+
+**Emergency rollback:**
+```bash
+# Helm rollback (bypasses GitOps - use only in emergency)
+helm history prometheus -n monitoring
+helm rollback prometheus <revision-number> -n monitoring
+
+# Then fix Git to match
+# And reconcile to restore GitOps control
+flux reconcile helmrelease prometheus -n monitoring
+```
+
+---
+
+#### Issue 5: HelmRelease in "Failed" State
+
+**Symptoms:**
+```bash
+$ flux get helmreleases -n monitoring
+NAME       READY   MESSAGE
+grafana    False   Helm install failed: rendered manifests contain a resource that already exists
+```
+
+**Diagnosis:**
+```bash
+# Full error details
+kubectl describe helmrelease grafana -n monitoring
+
+# Check if resources already exist
+kubectl get all -n monitoring -l app.kubernetes.io/name=grafana
+
+# Check Helm release
+helm list -n monitoring
+helm status grafana -n monitoring
+```
+
+**Common causes:**
+1. **Resource already exists**: Previous install didn't clean up
+2. **Helm release in bad state**: Partial install left artifacts
+3. **CRD conflicts**: CRDs from other sources conflict
+4. **Namespace issues**: Wrong namespace or namespace doesn't exist
+
+**Solutions:**
+```bash
+# 1. Clean up existing resources
+kubectl delete all -n monitoring -l app.kubernetes.io/name=grafana
+# Be careful: this deletes everything with that label
+
+# 2. Delete Helm release metadata
+helm uninstall grafana -n monitoring
+
+# 3. Reconcile HelmRelease (fresh install)
+flux reconcile helmrelease grafana -n monitoring
+
+# 4. If namespace missing, create it
+kubectl create namespace monitoring
+
+# 5. Nuclear option: suspend, clean, resume
+flux suspend helmrelease grafana -n monitoring
+kubectl delete helmrelease grafana -n monitoring
+# Remove from Git temporarily, push, re-add, push
+flux resume helmrelease grafana -n monitoring
+```
+
+---
+
+#### Issue 6: Reconciliation Not Happening
+
+**Symptoms:**
+- Made Git changes but cluster not updating
+- `flux get all` shows Ready but old revision
+
+**Diagnosis:**
+```bash
+# Check if Flux controllers are running
+kubectl get pods -n flux-system
+
+# Check controller logs
+kubectl logs -n flux-system deploy/source-controller
+kubectl logs -n flux-system deploy/kustomize-controller
+kubectl logs -n flux-system deploy/helm-controller
+
+# Check resource intervals
+flux get sources git flux-system
+# Shows: next reconciliation in 30s, etc.
+
+# Check if suspended
+flux get kustomizations -A
+flux get helmreleases -A
+# Look for "Suspended: True"
+```
+
+**Common causes:**
+1. **Controllers crashed**: Flux pods not running
+2. **Resource suspended**: Manual suspension active
+3. **Interval too long**: Not patient enough (wait for interval)
+4. **Webhook not configured**: Using webhooks but misconfigured
+
+**Solutions:**
+```bash
+# 1. Restart Flux controllers
+kubectl rollout restart -n flux-system deployment/source-controller
+kubectl rollout restart -n flux-system deployment/kustomize-controller
+kubectl rollout restart -n flux-system deployment/helm-controller
+
+# 2. Resume suspended resources
+flux resume kustomization flux-system
+flux resume helmrelease <name> -n <namespace>
+
+# 3. Force immediate reconciliation
+flux reconcile source git flux-system
+flux reconcile kustomization flux-system --with-source
+flux reconcile helmrelease <name> -n <namespace>
+
+# 4. Check Flux health
+flux check
+# Should show: ✔ all checks passed
+```
+
+---
+
+#### Issue 7: Authentication Errors (Git)
+
+**Symptoms:**
+```
+authentication required
+unable to clone: remote: Repository not found
+```
+
+**Diagnosis:**
+```bash
+# Check GitRepository
+flux get sources git -A
+
+# Check secret
+kubectl get secret flux-system -n flux-system -o yaml
+
+# Decode token (check if valid)
+kubectl get secret flux-system -n flux-system -o jsonpath='{.data.password}' | base64 -d
+# Copy token, test manually:
+# curl -H "Authorization: token <TOKEN>" https://api.github.com/repos/<owner>/<repo>
+```
+
+**Solutions:**
+```bash
+# 1. Verify token has correct permissions
+# GitHub → Settings → Developer settings → Personal access tokens
+# Needs: repo (full repo access)
+
+# 2. Recreate secret with new token
+kubectl delete secret flux-system -n flux-system
+kubectl create secret generic flux-system \
+  --from-literal=username=git \
+  --from-literal=password=<new-token> \
+  -n flux-system
+
+# 3. Reconcile
+flux reconcile source git flux-system
+```
+
+---
+
+#### Issue 8: Authentication Errors (Helm Repo)
+
+**Symptoms:**
+```
+failed to fetch Helm repository index: Get "https://...": dial tcp: lookup ... no such host
+failed to fetch Helm repository index: 401 Unauthorized
+```
+
+**Diagnosis:**
+```bash
+# Check HelmRepository
+flux get sources helm -A
+kubectl describe helmrepository <name> -n flux-system
+
+# Test URL manually
+curl -I https://prometheus-community.github.io/helm-charts/index.yaml
+
+# For private repos, check secret
+kubectl get secret <helm-secret> -n flux-system -o yaml
+```
+
+**Solutions:**
+```bash
+# 1. Fix HelmRepository URL
+kubectl edit helmrepository <name> -n flux-system
+# Ensure URL is correct (usually ends in /helm-charts or /)
+
+# 2. For private repos, add secret
+kubectl create secret generic helm-auth \
+  --from-literal=username=<user> \
+  --from-literal=password=<password> \
+  -n flux-system
+
+# Update HelmRepository
+kubectl edit helmrepository <name> -n flux-system
+# Add:
+spec:
+  secretRef:
+    name: helm-auth
+
+# 3. Check network connectivity
+kubectl run curl --image=curlimages/curl -it --rm -- \
+  curl -I https://prometheus-community.github.io/helm-charts/index.yaml
+```
+
+---
+
+### How to Read Flux Logs
+
+**Log levels:**
+```bash
+# Error only (recommended for troubleshooting)
+flux logs --level=error
+
+# Info (includes reconciliation events)
+flux logs --level=info
+
+# Debug (verbose, shows all operations)
+flux logs --level=debug
+```
+
+**Filter by resource type:**
+```bash
+# GitRepository logs
+flux logs --kind=GitRepository --name=flux-system
+
+# HelmRelease logs
+flux logs --kind=HelmRelease --name=prometheus
+
+# All HelmReleases
+flux logs --kind=HelmRelease
+```
+
+**Directly from controllers:**
+```bash
+# Source controller (GitRepository, HelmRepository)
+kubectl logs -n flux-system deploy/source-controller -f
+
+# Kustomize controller (Kustomization)
+kubectl logs -n flux-system deploy/kustomize-controller -f
+
+# Helm controller (HelmRelease)
+kubectl logs -n flux-system deploy/helm-controller -f
+
+# Follow logs in real-time
+kubectl logs -n flux-system deploy/helm-controller -f --tail=50
+```
+
+**Log analysis patterns:**
+
+**Success pattern:**
+```
+{"level":"info","ts":"2024-01-15T10:30:00.123Z","msg":"Reconciliation finished","reconciler kind":"HelmRelease","name":"prometheus","namespace":"monitoring","revision":"1.0.0"}
+```
+
+**Error pattern:**
+```
+{"level":"error","ts":"2024-01-15T10:30:00.123Z","msg":"Reconciliation failed","reconciler kind":"HelmRelease","name":"prometheus","namespace":"monitoring","error":"Helm install failed: rendered manifests contain a resource that already exists"}
+```
+
+---
+
+### Common Mistakes and How to Avoid Them
+
+#### Mistake 1: Wrong Namespace References
+
+**Problem:**
+```yaml
+# HelmRelease in monitoring namespace
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  chart:
+    spec:
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        # MISSING: namespace: flux-system
+```
+
+**Error:** HelmRelease looks for HelmRepository in monitoring namespace, doesn't find it.
+
+**Fix:**
+```yaml
+spec:
+  chart:
+    spec:
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system  # ← Add this!
+```
+
+**Rule:** When `sourceRef` points to a resource in a different namespace, always specify `namespace`.
+
+---
+
+#### Mistake 2: Forgetting to Add Resources to Kustomization
+
+**Problem:**
+```bash
+# Created new app directory
+mkdir -p kubernetes/apps/myapp
+# Created HelmRelease
+vim kubernetes/apps/myapp/helmrelease.yaml
+# Committed and pushed
+git add kubernetes/apps/myapp/ && git commit && git push
+# Nothing happens!
+```
+
+**Why:** Parent `kubernetes/apps/kustomization.yaml` doesn't include `myapp`.
+
+**Fix:**
+```bash
+# Add to parent kustomization
+cd kubernetes/apps
+kustomize edit add resource myapp
+git commit -am "Add myapp to kustomization" && git push
+```
+
+**Prevention:** Always update parent kustomization.yaml when adding new directories.
+
+---
+
+#### Mistake 3: Using Relative Paths in Git
+
+**Problem:**
+```yaml
+# In kubernetes/apps/prometheus/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/prometheus  # Relative path to non-existent directory
+```
+
+**Error:** `accumulating resources: accumulation err='accumulating resources from '../../base/prometheus': evalsymlink failure`
+
+**Fix:** Use correct relative paths or keep structure flat.
+
+**Best practice:** Keep structure simple as in your setup—each app is self-contained.
+
+---
+
+#### Mistake 4: Modifying Resources Directly with kubectl
+
+**Problem:**
+```bash
+# "Quick fix" directly on cluster
+kubectl edit deployment prometheus-server -n monitoring
+# Change replicas from 1 to 2
+# Works temporarily!
+```
+
+**What happens:** Next reconciliation (within 10 minutes), Flux reverts to Git state (replicas: 1).
+
+**Right way:**
+```bash
+# Edit in Git
+vim kubernetes/apps/prometheus/helmrelease.yaml
+# Change replicaCount in values
+git commit -am "Scale Prometheus to 2 replicas"
+git push
+# Flux applies within 1 minute
+```
+
+**Exception:** Emergency fixes are okay, but **immediately follow up with Git commit** to match.
+
+---
+
+#### Mistake 5: Not Checking HelmChart Intermediate Resource
+
+**Problem:** HelmRelease shows cryptic error, hard to debug.
+
+**What to check:**
+```bash
+# HelmRelease creates a HelmChart
+kubectl get helmcharts -n flux-system
+kubectl describe helmchart <namespace>-<helmrelease-name> -n flux-system
+
+# HelmChart errors are often more detailed
+```
+
+**Example:**
+```bash
+# HelmRelease error
+Error: Helm install failed
+
+# HelmChart error (more specific)
+Error: chart requires kubeVersion: >=1.25.0 which is incompatible with Kubernetes v1.24.0
+```
+
+---
+
+#### Mistake 6: Ignoring Resource Limits
+
+**Problem:** Helm chart deployed without resource limits specified.
+
+**What happens:**
+- Development: Works fine (small cluster)
+- Production: OOMKilled, CPU throttling, cluster instability
+
+**Best practice:** Always specify in HelmRelease values:
+```yaml
+values:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+```
+
+**Your setup:** Already does this for Prometheus and Grafana. Good!
+
+---
+
+#### Mistake 7: Not Testing Locally Before Committing
+
+**Problem:** Push broken YAML, Flux fails, have to debug in cluster.
+
+**Better workflow:**
+```bash
+# Before committing
+kustomize build kubernetes/ > /dev/null && echo "OK" || echo "FAILED"
+
+# Validate specific HelmRelease
+helm template test ./charts/myapp --values /tmp/test-values.yaml
+
+# Lint Helm chart
+helm lint ./charts/myapp
+
+# Validate YAML syntax
+yamllint kubernetes/
+```
+
+**Add to GitHub Actions:**
+```yaml
+# .github/workflows/validate.yml
+name: Validate
+on: [pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v3
+      - run: kubectl kustomize kubernetes/ > /dev/null
+```
+
+---
+
+### Emergency Debugging Checklist
+
+When everything is broken and you don't know where to start:
+
+```bash
+# 1. Check Flux controllers are running
+kubectl get pods -n flux-system
+# All should be Running
+
+# 2. Check Flux can reach Git
+flux get sources git -A
+# Should show Ready: True
+
+# 3. Check Kustomizations
+flux get kustomizations -A
+# Should show Ready: True
+
+# 4. Check HelmRepositories
+flux get sources helm -A
+# Should show Ready: True
+
+# 5. Check HelmReleases
+flux get helmreleases -A
+# Identify which are False
+
+# 6. Describe the failed HelmRelease
+kubectl describe helmrelease <name> -n <namespace>
+# Read the Events and Conditions
+
+# 7. Check underlying pods
+kubectl get pods -n <namespace>
+kubectl describe pod <pod-name> -n <namespace>
+kubectl logs <pod-name> -n <namespace>
+
+# 8. Check recent events
+kubectl get events -n <namespace> --sort-by='.lastTimestamp' | tail -20
+
+# 9. Force reconciliation
+flux reconcile kustomization flux-system --with-source
+flux reconcile helmrelease <name> -n <namespace>
+
+# 10. If still stuck, check controller logs
+kubectl logs -n flux-system deploy/helm-controller --tail=100
+```
+
+---
+
+### Monitoring Flux Health (Proactive)
+
+**Set up alerts:**
+
+Install Prometheus + Alertmanager (you have Prometheus):
+
+```yaml
+# Alert when Flux reconciliation fails
+- alert: FluxReconciliationFailure
+  expr: |
+    gotk_reconcile_condition{status="False",type="Ready"} == 1
+  for: 10m
+  annotations:
+    summary: "Flux reconciliation failed for {{ $labels.kind }}/{{ $labels.name }}"
+```
+
+**Metrics to watch:**
+```promql
+# Reconciliation duration
+gotk_reconcile_duration_seconds_bucket
+
+# Reconciliation failures
+gotk_reconcile_condition{status="False"}
+
+# Suspended resources
+gotk_suspend_status == 1
+```
+
+**Grafana dashboard:** Import dashboard ID 15798 (Flux Cluster Stats) or 15800 (Flux Control Plane).
+
+---
+
+### What Happens If Git Is Unavailable?
+
+**Scenario:** GitHub down, or network partition between cluster and Git.
+
+**What happens:**
+1. **GitRepository polls fail**: source-controller can't fetch updates
+2. **Last known state persists**: Cluster keeps running with last synced revision
+3. **No new deployments**: Can't apply changes from Git
+4. **Self-healing still works**: Flux reconciles from cached artifacts
+
+**How long can it survive?**
+- **Indefinitely for existing apps**: They keep running
+- **No new changes applied**: Until Git is reachable again
+
+**Cached artifacts:** Flux caches Git content and Helm charts locally. Reconciliation uses cache if Git unreachable.
+
+**Recovery:**
+```bash
+# When Git back online
+flux reconcile source git flux-system
+# Fetches any missed commits, applies changes
+```
+
+**Mitigation strategies:**
+1. **GitRepository mirrors**: Use Git mirrors for high availability
+2. **OCI registries**: Store Flux artifacts in OCI registry as backup
+3. **Terraform fallback**: Keep Terraform configs for infrastructure recovery
+
+**Your setup:** If GitHub is down temporarily, your cluster keeps running fine. When GitHub returns, Flux catches up automatically.
+
+---
+
+### Useful Debugging Scripts
+
+**Check all Flux resources at once:**
+```bash
+#!/bin/bash
+echo "=== GitRepositories ==="
+flux get sources git -A
+echo ""
+echo "=== HelmRepositories ==="
+flux get sources helm -A
+echo ""
+echo "=== Kustomizations ==="
+flux get kustomizations -A
+echo ""
+echo "=== HelmReleases ==="
+flux get helmreleases -A
+echo ""
+echo "=== Recent Errors ==="
+flux logs --level=error --since=10m
+```
+
+**Find all failing resources:**
+```bash
+flux get all -A | grep False
+```
+
+**Watch reconciliation in real-time:**
+```bash
+watch -n 5 'flux get helmreleases -A'
+```
+
+---
+
+## 10. Interview Questions
 
 Good luck with your preparation!
