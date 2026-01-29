@@ -3630,6 +3630,271 @@ data:
 
 ---
 
+### Terraform + GCP Secret Manager
+
+**The Problem:** You can't hardcode secrets in Terraform code because they'd be committed to Git (and visible in plain text to anyone with repo access). Additionally, sensitive values in Terraform configuration files create security and compliance risks.
+
+**Three Safe Approaches:**
+
+#### 1. Generate with Terraform (Recommended for random secrets)
+
+Use the `random_password` resource to generate secrets. The secret value only exists in the Terraform state file, never in your code.
+
+```hcl
+# Generate a random password
+resource "random_password" "db_password" {
+  length  = 32
+  special = true
+}
+
+# Store it in GCP Secret Manager
+resource "google_secret_manager_secret" "db_password" {
+  secret_id = "database-password"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "db_password" {
+  secret      = google_secret_manager_secret.db_password.id
+  secret_data = random_password.db_password.result
+}
+```
+
+**Key point:** The actual password never appears in your `.tf` files. It's generated at apply time and stored in:
+1. Terraform state (encrypted if using GCS backend)
+2. GCP Secret Manager (encrypted at rest)
+
+#### 2. Pass at Runtime via Variables
+
+Inject secrets through environment variables or CI/CD, never commit them.
+
+```hcl
+# variables.tf
+variable "api_key" {
+  description = "API key for third-party service"
+  type        = string
+  sensitive   = true  # Prevents value from appearing in logs
+}
+
+# main.tf
+resource "google_secret_manager_secret" "api_key" {
+  secret_id = "api-key"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "api_key" {
+  secret      = google_secret_manager_secret.api_key.id
+  secret_data = var.api_key
+}
+```
+
+**Usage in CI/CD:**
+```bash
+# GitHub Actions example
+terraform apply -var="api_key=${{ secrets.API_KEY }}"
+
+# Or via environment variable
+export TF_VAR_api_key="your-secret-value"
+terraform apply
+```
+
+#### 3. Manual Creation + Data Source (Separation of concerns)
+
+Create the secret manually (or via separate process), then reference it in Terraform without managing the value.
+
+```bash
+# Create secret manually first
+echo -n "my-sensitive-value" | gcloud secrets create app-secret --data-file=-
+```
+
+```hcl
+# Terraform only references, doesn't manage the value
+data "google_secret_manager_secret_version" "app_secret" {
+  secret  = "app-secret"
+  version = "latest"
+}
+
+# Use the secret data (e.g., pass to application)
+resource "kubernetes_secret" "app_secret" {
+  metadata {
+    name      = "app-secret"
+    namespace = "production"
+  }
+
+  data = {
+    secret = data.google_secret_manager_secret_version.app_secret.secret_data
+  }
+}
+```
+
+**Warning:** This still puts the secret in Terraform state. Use only when necessary.
+
+---
+
+#### Complete Example: Terraform → GCP Secret Manager → Kubernetes
+
+This shows the full flow from secret generation to application consumption.
+
+```hcl
+# 1. Generate database password with Terraform
+resource "random_password" "postgres_password" {
+  length  = 32
+  special = true
+}
+
+# 2. Store in GCP Secret Manager
+resource "google_secret_manager_secret" "postgres_password" {
+  secret_id = "postgres-password"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "postgres_password" {
+  secret      = google_secret_manager_secret.postgres_password.id
+  secret_data = random_password.postgres_password.result
+}
+
+# 3. Grant GKE service account access to read the secret
+resource "google_secret_manager_secret_iam_member" "external_secrets_access" {
+  secret_id = google_secret_manager_secret.postgres_password.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.gke_workload_identity_sa}"
+}
+```
+
+**External Secrets Operator syncs to Kubernetes:**
+
+```yaml
+# kubernetes/apps/database/external-secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: postgres-password
+  namespace: production
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: SecretStore
+  target:
+    name: postgres-password
+  data:
+    - secretKey: password
+      remoteRef:
+        key: postgres-password  # Secret ID in GCP Secret Manager
+```
+
+**Application consumes it:**
+
+```yaml
+# kubernetes/apps/database/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: production
+spec:
+  template:
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-password
+              key: password
+```
+
+**Flow summary:**
+1. Terraform generates `random_password` → stores in GCP Secret Manager
+2. External Secrets Operator fetches from GCP Secret Manager → creates K8s Secret
+3. Application mounts K8s Secret as environment variable
+
+---
+
+#### Comparison of Approaches
+
+| Approach | Secret in Git? | Secret in TF State? | Pros | Cons |
+|----------|---------------|---------------------|------|------|
+| **Generate with Terraform** | ❌ No | ✅ Yes (state only) | Fully automated, reproducible, no manual steps | Limited to generated secrets (passwords, tokens) |
+| **Pass at runtime** | ❌ No | ✅ Yes (state only) | Works for any secret, good for CI/CD | Requires external secret management (GitHub Secrets, etc.) |
+| **Manual + data source** | ❌ No | ✅ Yes (if used) | Clear separation, audit trail | Manual step required, state still has secret if used in resources |
+| **Hardcoded (DON'T)** | ❌ **YES** | ✅ Yes | Simple | **INSECURE: Violates all compliance standards** |
+
+---
+
+#### State File Security
+
+**Critical:** Terraform state contains sensitive values (secrets, connection strings, etc.).
+
+**GCS backend security (recommended):**
+
+```hcl
+terraform {
+  backend "gcs" {
+    bucket = "my-terraform-state"
+    prefix = "prod"
+  }
+}
+```
+
+**Default protections:**
+- **Encryption at rest:** GCS encrypts all data by default (Google-managed keys)
+- **Encryption in transit:** HTTPS/TLS for all API calls
+- **Access control:** Use IAM to restrict who can read the state bucket
+
+**Enhanced protection (optional):**
+
+```hcl
+# Create state bucket with customer-managed encryption key
+resource "google_storage_bucket" "terraform_state" {
+  name     = "my-terraform-state"
+  location = "US"
+
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.terraform_state.id
+  }
+
+  versioning {
+    enabled = true  # Protect against accidental deletion
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      num_newer_versions = 10  # Keep last 10 versions
+    }
+  }
+}
+
+# Restrict access
+resource "google_storage_bucket_iam_member" "state_access" {
+  bucket = google_storage_bucket.terraform_state.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:terraform@my-project.iam.gserviceaccount.com"
+}
+```
+
+**Best practices:**
+1. **Never commit state files to Git** (add `*.tfstate*` to `.gitignore`)
+2. **Use remote backend** (GCS, S3, Terraform Cloud) with encryption
+3. **Restrict access** to state bucket/storage (least privilege)
+4. **Enable versioning** to recover from accidental changes
+5. **Consider using Terraform Cloud/Enterprise** for additional state encryption and access controls
+
+---
+
 ### Your Setup: Adding Secrets Management
 
 **Recommendation for your showcase:** Start with Sealed Secrets (simplicity) or SOPS with GCP KMS (since you're on GCP).
