@@ -5,6 +5,59 @@
 
 ---
 
+## Prerequisites
+
+Before starting this learning plan, ensure you have all required tools installed and properly configured.
+
+### Required Tools
+
+```bash
+# Check all required tools are installed
+command -v terraform && echo "✓ Terraform" || echo "✗ Terraform MISSING"
+command -v gcloud && echo "✓ gcloud" || echo "✗ gcloud MISSING"
+command -v kubectl && echo "✓ kubectl" || echo "✗ kubectl MISSING"
+command -v flux && echo "✓ Flux CLI" || echo "✗ Flux CLI MISSING"
+command -v helm && echo "✓ Helm" || echo "✗ Helm MISSING"
+command -v jq && echo "✓ jq" || echo "✗ jq MISSING"
+command -v yq && echo "✓ yq" || echo "✗ yq MISSING (optional)"
+```
+
+### Tool Versions
+
+```bash
+# Verify tool versions
+terraform version
+gcloud version
+kubectl version --client
+flux version --client
+helm version
+jq --version
+yq --version 2>/dev/null || echo "yq not installed (optional)"
+```
+
+### Context Verification
+
+```bash
+# Verify working directory
+cd /Users/geoagriogiannis/Documents/GitHub/gitops
+pwd
+
+# Verify GCP authentication
+gcloud config get-value project
+gcloud config get-value account
+
+# Verify cluster access
+kubectl cluster-info
+kubectl get nodes
+
+# Verify Flux is operational
+flux check
+```
+
+**Note**: All commands in this guide assume you're running them from the repository root unless otherwise specified. If a command requires a specific directory, it will be explicitly stated.
+
+---
+
 ## Day 1: Infrastructure Layer (Terraform + GCP + Kubernetes Basics)
 
 ### TERRAFORM - 3 hours
@@ -203,6 +256,8 @@ gcloud config get-value project
 gcloud services list --enabled
 
 # Inspect the GKE cluster
+# Note: Run these from the terraform directory
+cd /Users/geoagriogiannis/Documents/GitHub/gitops/terraform
 gcloud container clusters describe $(terraform output -raw cluster_name) --zone=$(terraform output -raw zone)
 
 # List node pools
@@ -440,13 +495,21 @@ kubectl get svc -n monitoring prometheus-server -o yaml
 
 # Port-forward to access prometheus locally
 kubectl port-forward -n monitoring svc/prometheus-server 9090:80 &
+PF_PROMETHEUS_PID=$!
 # Visit http://localhost:9090
-# Kill the port-forward: pkill -f "port-forward"
+# Kill the port-forward when done
+kill $PF_PROMETHEUS_PID
 
 # Do the same for grafana
 kubectl port-forward -n monitoring svc/grafana 3000:80 &
+PF_GRAFANA_PID=$!
 # Visit http://localhost:3000
-# Kill it: pkill -f "port-forward"
+# Kill it when done
+kill $PF_GRAFANA_PID
+
+# Note: If you lose the PID, you can find and kill the process manually:
+# ps aux | grep port-forward
+# kill <PID>
 ```
 
 **Exercise 5: Create a Test Deployment**
@@ -599,6 +662,12 @@ flux reconcile kustomization flux-system
 #### Hands-On Exercises (1.5 hours)
 
 **Exercise 1: Trace Flux Reconciliation**
+
+**IMPORTANT**: This exercise modifies files and pushes to Git. Consider working on a feature branch:
+```bash
+git checkout -b test-flux-reconciliation
+```
+
 ```bash
 # Watch Flux reconcile
 flux get kustomizations --watch &
@@ -609,7 +678,13 @@ WATCH_PID=$!
 cat /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/prometheus/helmrelease.yaml
 
 # Change the interval from 5m to 1m temporarily
-sed -i.bak 's/interval: 5m/interval: 1m/' /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/prometheus/helmrelease.yaml
+# Note: sed -i behavior differs between macOS and Linux
+# macOS requires -i '' or -i.bak, Linux uses -i directly
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  sed -i.bak 's/interval: 5m/interval: 1m/' /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/prometheus/helmrelease.yaml
+else
+  sed -i 's/interval: 5m/interval: 1m/' /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/prometheus/helmrelease.yaml
+fi
 
 # Commit and push
 cd /Users/geoagriogiannis/Documents/GitHub/gitops
@@ -625,6 +700,10 @@ git revert HEAD
 git push
 
 kill $WATCH_PID
+
+# Return to master if you used a feature branch
+git checkout master
+git branch -D test-flux-reconciliation
 ```
 
 **Exercise 2: Suspend and Resume Resources**
@@ -661,10 +740,20 @@ helm get manifest prometheus -n monitoring | head -50
 helm history prometheus -n monitoring
 
 # Compare HelmRelease values to what's deployed
+# Using yq (if installed)
 kubectl get helmrelease prometheus -n monitoring -o jsonpath='{.spec.values}' | yq
+# Alternative using jq (always available per prerequisites)
+kubectl get helmrelease prometheus -n monitoring -o json | jq '.spec.values'
 ```
 
 **Exercise 4: Add a New App via Flux**
+
+**IMPORTANT**: This exercise pushes changes to Git. Consider using a feature branch:
+```bash
+cd /Users/geoagriogiannis/Documents/GitHub/gitops
+git checkout -b test-add-nginx-app
+```
+
 ```bash
 # Create nginx directory
 mkdir -p /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/nginx
@@ -737,6 +826,10 @@ git restore /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/kusto
 git add -A
 git commit -m "Remove nginx test app"
 git push
+
+# Return to master if you used a feature branch
+git checkout master
+git branch -D test-add-nginx-app
 ```
 
 **Exercise 5: Break and Fix - Simulate Failures**
@@ -914,6 +1007,13 @@ grep -A10 "alertmanager:" /tmp/prometheus-deployed.yaml
 ```
 
 **Exercise 3: Modify HelmRelease Values**
+
+**IMPORTANT**: This exercise pushes changes to Git. Consider using a feature branch:
+```bash
+cd /Users/geoagriogiannis/Documents/GitHub/gitops
+git checkout -b test-scale-prometheus
+```
+
 ```bash
 # Current prometheus replicas is 1. Let's change to 2
 cat /Users/geoagriogiannis/Documents/GitHub/gitops/kubernetes/apps/prometheus/helmrelease.yaml
@@ -973,6 +1073,10 @@ kubectl get deployment prometheus-server -n monitoring -o jsonpath='{.spec.repli
 # Restore
 git revert HEAD
 git push
+
+# Return to master if you used a feature branch
+git checkout master
+git branch -D test-scale-prometheus
 ```
 
 **Exercise 4: Understand Helm Release Secrets**
@@ -984,7 +1088,13 @@ kubectl get secrets -n monitoring
 kubectl get secret -n monitoring -l owner=helm -o yaml
 
 # See the release metadata
-kubectl get secret sh.helm.release.v1.prometheus.v1 -n monitoring -o jsonpath='{.data.release}' | base64 -d | base64 -d | gunzip | jq .
+# Note: The secret name includes version number (v1, v2, etc.) which increments with each release
+# Check available versions first
+kubectl get secrets -n monitoring -l name=prometheus,owner=helm --sort-by=.metadata.creationTimestamp
+
+# Decode the latest release (adjust version number as needed)
+LATEST_VERSION=$(kubectl get secrets -n monitoring -l name=prometheus,owner=helm -o jsonpath='{.items[-1].metadata.name}')
+kubectl get secret $LATEST_VERSION -n monitoring -o jsonpath='{.data.release}' | base64 -d | base64 -d | gunzip | jq .
 
 # Check how many releases exist
 kubectl get secrets -n monitoring -l name=prometheus,owner=helm
@@ -1484,6 +1594,266 @@ Answer:
 - workflow_dispatch: Manual control (CD for production)
 - Your workflow uses both: auto-plan on push, manual apply
 - This is a safety pattern for infrastructure
+```
+
+---
+
+## Troubleshooting Scenarios
+
+These are common real-world problems you'll encounter. Practice diagnosing and fixing them.
+
+### Scenario 1: Pod CrashLoopBackOff
+
+**Symptoms**: Pod keeps restarting, never reaches Running state
+
+**Diagnosis Steps**:
+```bash
+# Identify the crashing pod
+kubectl get pods -A | grep -i crash
+
+# Check pod status and recent events
+kubectl describe pod <POD_NAME> -n <NAMESPACE>
+
+# Check logs from current container
+kubectl logs <POD_NAME> -n <NAMESPACE>
+
+# Check logs from previous crashed container
+kubectl logs <POD_NAME> -n <NAMESPACE> --previous
+
+# Check if it's a resource issue
+kubectl top pod <POD_NAME> -n <NAMESPACE>
+
+# Check container exit code
+kubectl get pod <POD_NAME> -n <NAMESPACE> -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}'
+```
+
+**Common Causes and Fixes**:
+
+1. **Missing ConfigMap or Secret**:
+   ```bash
+   # Check what the pod is trying to mount
+   kubectl get pod <POD_NAME> -n <NAMESPACE> -o yaml | grep -A5 "volumes:"
+
+   # Verify the ConfigMap/Secret exists
+   kubectl get configmap,secret -n <NAMESPACE>
+   ```
+
+2. **Application Error**:
+   ```bash
+   # Check logs for stack trace or error message
+   kubectl logs <POD_NAME> -n <NAMESPACE> --previous | tail -50
+
+   # If it's a liveness probe failure, check probe config
+   kubectl get pod <POD_NAME> -n <NAMESPACE> -o jsonpath='{.spec.containers[0].livenessProbe}'
+   ```
+
+3. **Resource Limits**:
+   ```bash
+   # Check if OOMKilled
+   kubectl describe pod <POD_NAME> -n <NAMESPACE> | grep -A5 "Last State"
+
+   # Increase memory limits in deployment/helmrelease
+   kubectl get deployment <DEPLOYMENT> -n <NAMESPACE> -o yaml | grep -A10 resources
+   ```
+
+4. **Permission Issues**:
+   ```bash
+   # Check security context
+   kubectl get pod <POD_NAME> -n <NAMESPACE> -o jsonpath='{.spec.securityContext}'
+
+   # Check service account
+   kubectl get pod <POD_NAME> -n <NAMESPACE> -o jsonpath='{.spec.serviceAccountName}'
+   kubectl get serviceaccount <SA_NAME> -n <NAMESPACE> -o yaml
+   ```
+
+### Scenario 2: Flux Reconciliation Stuck
+
+**Symptoms**: HelmRelease shows "Reconciling" for extended period, changes in Git not applied
+
+**Diagnosis Steps**:
+```bash
+# Check Flux system health
+flux check
+
+# Check all Flux resources status
+flux get all
+
+# Check specific HelmRelease
+flux get helmrelease <RELEASE_NAME> -n <NAMESPACE>
+
+# Check detailed status and events
+kubectl describe helmrelease <RELEASE_NAME> -n <NAMESPACE>
+
+# Check Flux logs
+flux logs --kind=HelmRelease --name=<RELEASE_NAME> --namespace=<NAMESPACE>
+
+# Check helm-controller logs
+kubectl logs -n flux-system deploy/helm-controller -f
+
+# Check source-controller logs (for Git fetch issues)
+kubectl logs -n flux-system deploy/source-controller -f
+```
+
+**Common Causes and Fixes**:
+
+1. **Git Authentication Failure**:
+   ```bash
+   # Check GitRepository status
+   flux get sources git
+   kubectl describe gitrepository flux-system -n flux-system
+
+   # Verify GitHub PAT secret is valid
+   kubectl get secret flux-system -n flux-system -o yaml
+
+   # Test Git access manually
+   git ls-remote https://github.com/<USER>/<REPO>.git
+   ```
+
+2. **Helm Chart Not Found**:
+   ```bash
+   # Check HelmRepository status
+   flux get sources helm
+   kubectl describe helmrepository <REPO_NAME> -n flux-system
+
+   # Verify chart exists
+   helm search repo <REPO_NAME>/<CHART_NAME>
+
+   # Force HelmRepository update
+   flux reconcile source helm <REPO_NAME> -n flux-system
+   ```
+
+3. **Invalid HelmRelease Values**:
+   ```bash
+   # Get current values
+   kubectl get helmrelease <RELEASE_NAME> -n <NAMESPACE> -o yaml
+
+   # Test rendering locally
+   helm template <RELEASE_NAME> <REPO>/<CHART> -f values.yaml --dry-run
+
+   # Check for validation errors in events
+   kubectl get events -n <NAMESPACE> --sort-by='.lastTimestamp' | grep <RELEASE_NAME>
+   ```
+
+4. **Resource in Suspended State**:
+   ```bash
+   # Check if suspended
+   flux get helmreleases -A | grep -i suspend
+
+   # Resume if needed
+   flux resume helmrelease <RELEASE_NAME> -n <NAMESPACE>
+
+   # Force reconciliation
+   flux reconcile helmrelease <RELEASE_NAME> -n <NAMESPACE>
+   ```
+
+5. **Kustomization Dependency Not Met**:
+   ```bash
+   # Check kustomization dependencies
+   kubectl get kustomization -n flux-system -o yaml | grep -A5 dependsOn
+
+   # Check if dependency is healthy
+   flux get kustomizations
+
+   # Force reconcile the dependency first
+   flux reconcile kustomization <DEPENDENCY_NAME> -n flux-system
+   ```
+
+### Scenario 3: Terraform State Lock
+
+**Symptoms**: Terraform commands hang or fail with "Error acquiring the state lock"
+
+**Diagnosis Steps**:
+```bash
+cd /Users/geoagriogiannis/Documents/GitHub/gitops/terraform
+
+# Try to run terraform plan
+terraform plan
+# Will show lock info including Lock ID and who owns it
+
+# Check state backend configuration
+cat backend.tf  # or wherever backend is configured
+
+# For GCS backend, check lock info
+gsutil ls gs://<BUCKET_NAME>/<STATE_FILE>.lock
+```
+
+**Common Causes and Fixes**:
+
+1. **Previous Operation Interrupted**:
+   ```bash
+   # Check if any terraform process is still running
+   ps aux | grep terraform
+
+   # If stale lock, force unlock (USE WITH CAUTION)
+   # Get the Lock ID from the error message
+   terraform force-unlock <LOCK_ID>
+
+   # Confirm no one else is actually running terraform
+   # Then try your operation again
+   terraform plan
+   ```
+
+2. **CI/CD Pipeline Still Running**:
+   ```bash
+   # Check GitHub Actions
+   gh run list --workflow=terraform-deploy.yml --limit=5
+
+   # Check if any runs are in progress
+   gh run list --workflow=terraform-deploy.yml --status=in_progress
+
+   # If needed, cancel the run
+   gh run cancel <RUN_ID>
+
+   # Wait for lock to release, then proceed
+   ```
+
+3. **Multiple Users/Sessions**:
+   ```bash
+   # Error message shows who has the lock and when
+   # Contact that person or wait for their operation to complete
+
+   # If you KNOW it's safe (e.g., your own stale lock)
+   terraform force-unlock <LOCK_ID>
+   ```
+
+4. **Backend Credentials Issue**:
+   ```bash
+   # Verify GCP authentication
+   gcloud auth list
+   gcloud config get-value project
+
+   # Test access to state bucket
+   gsutil ls gs://<BUCKET_NAME>/
+
+   # If auth expired, re-authenticate
+   gcloud auth application-default login
+   ```
+
+**Prevention Best Practices**:
+```bash
+# Always let terraform complete (don't Ctrl+C unless necessary)
+# If you must interrupt, use:
+# - Ctrl+C once (terraform will try to cleanup)
+# - Wait for "Interrupt received" message
+# - Only Ctrl+C again if terraform truly hangs
+
+# Use state locking in backend configuration (already done in your repo)
+# Use CI/CD for team environments to serialize operations
+# Consider using Terraform Cloud/Enterprise for better collaboration
+```
+
+**Emergency State Recovery**:
+```bash
+# If state is corrupted or lost
+# Pull a backup from GCS versioning
+gsutil ls -a gs://<BUCKET_NAME>/terraform.tfstate
+
+# Download a previous version
+gsutil cp gs://<BUCKET_NAME>/terraform.tfstate#<VERSION> ./terraform.tfstate.backup
+
+# Restore if needed (after backing up current state)
+terraform state pull > current-state.json
+terraform state push terraform.tfstate.backup
 ```
 
 ---
