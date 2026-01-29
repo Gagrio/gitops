@@ -3014,13 +3014,14 @@ Alternatively, use Flagger's Blue-Green mode for automation.
 **Q: What's the difference between Canary deployments and A/B testing?**
 
 A:
+
 | Aspect | Canary | A/B Testing |
 |--------|--------|-------------|
 | **Purpose** | Safe rollout, technical validation | Feature experimentation, business validation |
 | **Metrics** | Error rate, latency, resource usage | Conversion rate, engagement, revenue |
 | **Duration** | Minutes to hours | Days to weeks |
 | **Goal** | Deploy new version safely | Choose best feature variant |
-| **Rollback** | Yes (if metrics fail) | No rollback—pick winner based on data |
+| **Rollback** | Yes (if metrics fail) | No rollback - pick winner based on data |
 | **Traffic split** | Percentage-based (10%, 50%) | User attribute-based (location, device) |
 
 ---
