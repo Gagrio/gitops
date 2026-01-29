@@ -4428,78 +4428,6 @@ In your setup: Flux's Kustomization reads the kustomize kustomization.yaml files
 
 ---
 
-## 11. Quick Reference
-
-### Your Repository Structure
-
-```
-gitops/
-├── .github/workflows/
-│   ├── terraform-deploy.yml     # Push: plan only, Manual: plan OR apply
-│   └── terraform-destroy.yml    # Manual only, requires "yes-destroy"
-├── terraform/                   # Creates GKE + bootstraps Flux
-├── charts/                      # Custom Helm charts
-│   └── hello-gitops/            # Example chart (local, from Git)
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
-│           ├── _helpers.tpl
-│           ├── deployment.yaml
-│           ├── service.yaml
-│           ├── configmap.yaml
-│           └── NOTES.txt
-├── kubernetes/
-│   ├── kustomization.yaml       # Root: flux-system + apps
-│   ├── flux-system/             # Flux manages itself
-│   └── apps/
-│       ├── kustomization.yaml   # prometheus + grafana + hello-gitops
-│       ├── prometheus/
-│       │   ├── kustomization.yaml
-│       │   ├── helmrepository.yaml  → flux-system namespace
-│       │   └── helmrelease.yaml     → monitoring namespace
-│       ├── grafana/
-│       │   ├── kustomization.yaml
-│       │   ├── helmrepository.yaml  → flux-system namespace
-│       │   └── helmrelease.yaml     → monitoring namespace
-│       └── hello-gitops/
-│           ├── kustomization.yaml
-│           └── helmrelease.yaml     → default namespace (local chart)
-└── plan.md, README.md, gitops-study-guide.md
-```
-
-### Key Commands
-
-```bash
-# Flux status
-flux get all -A
-
-# Force reconciliation
-flux reconcile kustomization flux-system --with-source
-
-# View HelmRelease status
-flux get helmreleases -n monitoring
-
-# Debug Flux
-flux logs --level=error
-
-# View deployed resources
-kubectl get all -n monitoring
-
-# Rollback (via Git)
-git revert HEAD && git push
-```
-
-### Key Intervals in Your Setup
-
-| Resource | Interval | Purpose |
-|----------|----------|---------|
-| GitRepository | 1m | Poll Git for changes |
-| Kustomization | 10m | Reconcile manifests, detect drift |
-| HelmRepository | 1h | Check for new chart versions |
-| HelmRelease | 5m | Reconcile Helm releases |
-
----
-
 ## 7. Exposing Applications
 
 ### LoadBalancer vs Ingress Trade-offs
@@ -5693,5 +5621,866 @@ watch -n 5 'flux get helmreleases -A'
 ---
 
 ## 10. Interview Questions
+
+### GitOps Fundamentals
+
+**Q: What is GitOps and how does it differ from traditional CI/CD?**
+
+GitOps is a set of practices where Git serves as the single source of truth for declarative infrastructure and applications. Key differences:
+
+| Aspect | Traditional CI/CD | GitOps |
+|--------|------------------|--------|
+| **Model** | Push-based (CI pushes to cluster) | Pull-based (cluster pulls from Git) |
+| **Source of truth** | CI/CD pipeline state | Git repository |
+| **Credentials** | CI needs cluster access | Cluster needs Git read access |
+| **Drift detection** | Manual or none | Continuous and automatic |
+| **Rollback** | Re-run pipeline or manual | `git revert` |
+
+**Q: What are the four principles of GitOps?**
+
+1. **Declarative**: System state is described declaratively (YAML, not scripts)
+2. **Versioned and Immutable**: Git stores the desired state with full history
+3. **Pulled Automatically**: Agents pull desired state and apply it
+4. **Continuously Reconciled**: Agents continuously ensure actual state matches desired state
+
+**Q: What is drift detection and why is it important?**
+
+Drift detection identifies differences between the desired state (Git) and actual state (cluster). It's important because:
+- Manual `kubectl` changes are detected and can be reverted
+- Ensures consistency across environments
+- Provides audit trail of who changed what
+- Prevents configuration sprawl
+
+---
+
+### Flux CD Questions
+
+**Q: Explain the Flux reconciliation loop.**
+
+```
+1. Source Controller polls Git (every 1m by default)
+2. Detects new commits by comparing SHA
+3. Downloads manifests from specified path
+4. Kustomize Controller builds manifests (follows kustomization.yaml hierarchy)
+5. Helm Controller processes HelmReleases (fetches charts, renders templates)
+6. Resources applied to cluster via Kubernetes API
+7. Loop repeats at configured interval (reconciles even without Git changes)
+```
+
+**Q: What are the main Flux CRDs and their purposes?**
+
+| CRD | Purpose | Controller |
+|-----|---------|------------|
+| `GitRepository` | Defines Git source to watch | source-controller |
+| `HelmRepository` | Defines Helm chart repository | source-controller |
+| `Kustomization` | Defines what path to apply from source | kustomize-controller |
+| `HelmRelease` | Defines Helm chart to install with values | helm-controller |
+
+**Q: What's the difference between Flux Kustomization and Kustomize kustomization.yaml?**
+
+| Flux Kustomization (CRD) | Kustomize kustomization.yaml |
+|--------------------------|------------------------------|
+| `kustomize.toolkit.fluxcd.io/v1` | `kustomize.config.k8s.io/v1beta1` |
+| Tells Flux what to apply | Tells Kustomize how to build |
+| Has `sourceRef`, `interval`, `prune` | Has `resources`, `patches`, `commonLabels` |
+| Kubernetes resource (applied to cluster) | File processed by kustomize CLI |
+
+**Q: How does Flux handle secrets?**
+
+Flux itself doesn't encrypt secrets. Options:
+1. **Sealed Secrets**: Encrypt with cluster public key, commit encrypted version
+2. **SOPS**: Encrypt with age/GPG/KMS, Flux decrypts at apply time
+3. **External Secrets Operator**: Fetch from Vault/AWS Secrets Manager at runtime
+
+**Q: A HelmRelease is stuck in "False" ready state. How do you debug it?**
+
+```bash
+# 1. Check HelmRelease status
+flux get helmrelease <name> -n <namespace>
+
+# 2. Describe for detailed error
+kubectl describe helmrelease <name> -n <namespace>
+
+# 3. Check Helm Controller logs
+flux logs --kind=HelmRelease --name=<name> -n <namespace>
+
+# 4. Check if HelmRepository is ready
+flux get sources helm -A
+
+# 5. Try manual Helm template to see rendering errors
+helm template <release> <chart> --values values.yaml
+```
+
+**Q: How do you temporarily stop Flux from reconciling a resource?**
+
+```bash
+# Suspend a HelmRelease
+flux suspend helmrelease <name> -n <namespace>
+
+# Resume when ready
+flux resume helmrelease <name> -n <namespace>
+```
+
+Use cases: debugging, manual testing, preventing rollback during incident response.
+
+---
+
+### Helm Questions
+
+**Q: Explain the Helm chart structure.**
+
+```
+mychart/
+├── Chart.yaml          # Metadata (name, version, dependencies)
+├── values.yaml         # Default configuration values
+├── charts/             # Subcharts (dependencies)
+├── templates/          # Kubernetes manifest templates
+│   ├── _helpers.tpl    # Reusable template functions
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── NOTES.txt       # Post-install instructions
+└── .helmignore         # Files to exclude from packaging
+```
+
+**Q: What is the values precedence in Helm?**
+
+From lowest to highest priority:
+1. `values.yaml` in parent chart
+2. `values.yaml` in subchart
+3. `-f custom-values.yaml` (in order specified)
+4. `--set key=value` (highest priority)
+
+In Flux HelmRelease:
+```yaml
+spec:
+  values:        # Equivalent to -f values.yaml
+    key: value
+  valuesFrom:    # Load from ConfigMap/Secret
+    - kind: ConfigMap
+      name: my-values
+```
+
+**Q: What are Helm hooks and when would you use them?**
+
+Hooks run at specific lifecycle points:
+- `pre-install`: Before any resources installed (e.g., create namespace)
+- `post-install`: After all resources installed (e.g., run migrations)
+- `pre-upgrade`: Before upgrade (e.g., backup database)
+- `post-upgrade`: After upgrade (e.g., clear cache)
+- `pre-delete`: Before deletion (e.g., backup data)
+
+Example use case: Database migration Job that runs before deploying new app version.
+
+**Q: How do you debug a Helm template rendering issue?**
+
+```bash
+# Render templates locally without installing
+helm template myrelease ./mychart
+
+# With debug output
+helm template myrelease ./mychart --debug
+
+# Dry-run against cluster (validates against API)
+helm install myrelease ./mychart --dry-run
+
+# Lint for common issues
+helm lint ./mychart
+```
+
+---
+
+### Kubernetes Questions
+
+**Q: What's the difference between Deployment, StatefulSet, and DaemonSet?**
+
+| Type | Use Case | Characteristics |
+|------|----------|-----------------|
+| **Deployment** | Stateless apps | Interchangeable pods, rolling updates |
+| **StatefulSet** | Stateful apps | Stable network IDs, ordered deployment, persistent storage |
+| **DaemonSet** | Node agents | One pod per node (logging, monitoring agents) |
+
+**Q: Explain Kubernetes service types.**
+
+| Type | Accessibility | Use Case |
+|------|---------------|----------|
+| `ClusterIP` | Internal only | Service-to-service communication |
+| `NodePort` | External via node IP:port | Development, on-prem without LB |
+| `LoadBalancer` | External via cloud LB | Production external access |
+| `ExternalName` | DNS alias | Accessing external services |
+
+**Q: What is a ConfigMap vs Secret?**
+
+| ConfigMap | Secret |
+|-----------|--------|
+| Non-sensitive configuration | Sensitive data (passwords, tokens) |
+| Stored as plain text | Base64 encoded (not encrypted by default!) |
+| No size limit (practical: 1MB) | Size limit: 1MB |
+| Can be mounted as files or env vars | Same, but with restricted access |
+
+---
+
+### Scenario-Based Questions
+
+**Q: Your team pushed a bad config that broke production. How do you rollback with GitOps?**
+
+```bash
+# Option 1: Git revert (preferred - maintains history)
+git revert HEAD
+git push
+# Flux detects new commit, applies previous state
+
+# Option 2: Helm rollback via Flux (if using HelmRelease)
+flux suspend helmrelease <name> -n <namespace>
+helm rollback <release> <revision> -n <namespace>
+# Then fix Git and resume Flux
+
+# Option 3: Check Flux revision history
+kubectl get helmrelease <name> -n <namespace> -o yaml
+# Look at status.history for previous versions
+```
+
+**Q: How would you implement a canary deployment with Flux?**
+
+Option 1: **Flagger** (Flux's progressive delivery tool)
+```yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: my-app
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  progressDeadlineSeconds: 60
+  service:
+    port: 80
+  analysis:
+    interval: 30s
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 10
+```
+
+Option 2: **Manual with two HelmReleases**
+- `my-app-stable` (90% traffic)
+- `my-app-canary` (10% traffic)
+- Adjust traffic split via Ingress weights
+
+**Q: How do you handle secrets in a GitOps workflow where everything is in Git?**
+
+Never commit plain secrets. Options:
+
+1. **Sealed Secrets**:
+   ```bash
+   kubeseal --format yaml < secret.yaml > sealed-secret.yaml
+   # Commit sealed-secret.yaml (encrypted)
+   ```
+
+2. **SOPS with Flux**:
+   ```yaml
+   # HelmRelease
+   spec:
+     valuesFrom:
+       - kind: Secret
+         name: my-secret
+         valuesKey: values.yaml
+     decryption:
+       provider: sops
+       secretRef:
+         name: sops-age
+   ```
+
+3. **External Secrets Operator**:
+   ```yaml
+   apiVersion: external-secrets.io/v1beta1
+   kind: ExternalSecret
+   spec:
+     refreshInterval: 1h
+     secretStoreRef:
+       name: vault-backend
+     target:
+       name: my-secret
+     data:
+       - secretKey: password
+         remoteRef:
+           key: secret/myapp
+           property: password
+   ```
+
+**Q: Your HelmRelease keeps failing with "upgrade retries exhausted". What do you do?**
+
+```bash
+# 1. Check the error
+kubectl describe helmrelease <name> -n <namespace>
+
+# 2. Check Helm history
+helm history <release> -n <namespace>
+
+# 3. If stuck in pending state, uninstall and let Flux reinstall
+flux suspend helmrelease <name> -n <namespace>
+helm uninstall <release> -n <namespace>
+flux resume helmrelease <name> -n <namespace>
+
+# 4. Or reset the failure count
+kubectl patch helmrelease <name> -n <namespace> \
+  --type='json' -p='[{"op": "remove", "path": "/status"}]'
+flux reconcile helmrelease <name> -n <namespace>
+```
+
+**Q: How do you promote changes from dev to staging to production in GitOps?**
+
+Common patterns:
+
+1. **Branch-per-environment**:
+   - `dev` branch → dev cluster
+   - `staging` branch → staging cluster
+   - `main` branch → production cluster
+   - Promotion via PR merge
+
+2. **Directory-per-environment** (recommended):
+   ```
+   environments/
+   ├── dev/
+   │   └── kustomization.yaml
+   ├── staging/
+   │   └── kustomization.yaml
+   └── production/
+       └── kustomization.yaml
+   ```
+   Each cluster watches its own path.
+
+3. **Image promotion**:
+   - All environments use same manifests
+   - Only image tag differs
+   - Flux ImagePolicy auto-updates tags
+
+---
+
+### Architecture Questions
+
+**Q: How would you set up Flux for multiple clusters?**
+
+Option 1: **Single repo, multiple paths**
+```
+clusters/
+├── dev/
+│   └── flux-system/
+├── staging/
+│   └── flux-system/
+└── production/
+    └── flux-system/
+```
+Each cluster's Flux watches its own path.
+
+Option 2: **Repo per cluster**
+- Separate repos for each environment
+- Shared base repo as Git submodule or Flux dependency
+
+Option 3: **Fleet management** (for many clusters)
+- Use Flux's `Kustomization` dependencies
+- Central management repo with cluster-specific overlays
+
+**Q: What's your approach to disaster recovery with GitOps?**
+
+1. **Git is the backup**: All desired state is in Git
+2. **Recreate cluster**: `terraform apply` (or equivalent)
+3. **Bootstrap Flux**: `flux bootstrap` or Terraform flux provider
+4. **Automatic recovery**: Flux pulls from Git, recreates all resources
+
+Key considerations:
+- Persistent data needs separate backup (Velero, cloud snapshots)
+- Secrets need to be recoverable (backup encryption keys)
+- Document bootstrap process
+
+**Q: How do you handle CRDs in GitOps?**
+
+CRDs must exist before resources that use them. Options:
+
+1. **Flux dependency ordering**:
+   ```yaml
+   # cert-manager-crds Kustomization
+   apiVersion: kustomize.toolkit.fluxcd.io/v1
+   kind: Kustomization
+   metadata:
+     name: cert-manager-crds
+   ---
+   # cert-manager Kustomization depends on CRDs
+   apiVersion: kustomize.toolkit.fluxcd.io/v1
+   kind: Kustomization
+   metadata:
+     name: cert-manager
+   spec:
+     dependsOn:
+       - name: cert-manager-crds
+   ```
+
+2. **Helm chart includes CRDs**: Most charts install their own CRDs
+
+3. **installCRDs value**: Many charts have `installCRDs: true` option
+
+---
+
+## 11. Quick Reference
+
+### Flux CLI Cheat Sheet
+
+#### Status Commands
+
+```bash
+# Check Flux installation health
+flux check
+
+# View all Flux resources across namespaces
+flux get all -A
+
+# Check specific resource types
+flux get sources git -A          # GitRepositories
+flux get sources helm -A         # HelmRepositories
+flux get kustomizations -A       # Kustomizations
+flux get helmreleases -A         # HelmReleases
+
+# View Flux logs
+flux logs                        # All controllers
+flux logs --level=error          # Errors only
+flux logs --kind=HelmRelease --name=prometheus -n monitoring
+```
+
+#### Reconciliation Commands
+
+```bash
+# Force immediate reconciliation
+flux reconcile source git flux-system           # Git source
+flux reconcile kustomization flux-system        # Kustomization
+flux reconcile helmrelease prometheus -n monitoring
+
+# Reconcile with source (fetch + apply)
+flux reconcile kustomization flux-system --with-source
+```
+
+#### Suspend/Resume Commands
+
+```bash
+# Suspend (stop reconciling)
+flux suspend kustomization flux-system
+flux suspend helmrelease grafana -n monitoring
+flux suspend source git flux-system
+
+# Resume
+flux resume kustomization flux-system
+flux resume helmrelease grafana -n monitoring
+flux resume source git flux-system
+```
+
+#### Resource Generation (No YAML Memorization!)
+
+```bash
+# Generate HelmRelease for remote chart
+flux create helmrelease prometheus \
+  --source=HelmRepository/prometheus-community \
+  --chart=prometheus \
+  --chart-version="25.x" \
+  --namespace=monitoring \
+  --target-namespace=monitoring \
+  --export > helmrelease.yaml
+
+# Generate HelmRelease for local chart (in Git repo)
+flux create helmrelease hello-gitops \
+  --source=GitRepository/flux-system \
+  --chart=./charts/hello-gitops \
+  --namespace=default \
+  --export > helmrelease.yaml
+
+# Generate HelmRepository
+flux create source helm prometheus-community \
+  --url=https://prometheus-community.github.io/helm-charts \
+  --interval=1h \
+  --namespace=flux-system \
+  --export > helmrepository.yaml
+
+# Generate GitRepository
+flux create source git my-repo \
+  --url=https://github.com/org/repo \
+  --branch=main \
+  --interval=1m \
+  --export > gitrepository.yaml
+
+# Generate Kustomization
+flux create kustomization apps \
+  --source=GitRepository/flux-system \
+  --path=./kubernetes/apps \
+  --prune=true \
+  --interval=10m \
+  --export > kustomization.yaml
+```
+
+---
+
+### Helm CLI Cheat Sheet
+
+#### Chart Development
+
+```bash
+# Create new chart scaffold
+helm create mychart
+
+# Validate chart
+helm lint mychart/
+
+# Render templates locally (see output without installing)
+helm template myrelease mychart/
+helm template myrelease mychart/ --values custom-values.yaml
+helm template myrelease mychart/ --set key=value --debug
+
+# Package chart
+helm package mychart/
+```
+
+#### Chart Installation (Manual, not GitOps)
+
+```bash
+# Add repository
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Search for charts
+helm search repo prometheus
+
+# Show chart values
+helm show values prometheus-community/prometheus
+
+# Install
+helm install myrelease prometheus-community/prometheus -n monitoring
+helm install myrelease ./local-chart -f values.yaml
+
+# Upgrade
+helm upgrade myrelease prometheus-community/prometheus -n monitoring
+
+# Rollback
+helm rollback myrelease 1 -n monitoring
+
+# Uninstall
+helm uninstall myrelease -n monitoring
+
+# List releases
+helm list -A
+helm history myrelease -n monitoring
+```
+
+---
+
+### Kubectl Commands for GitOps
+
+#### Resource Inspection
+
+```bash
+# View Flux CRDs
+kubectl get gitrepositories -A
+kubectl get helmrepositories -A
+kubectl get kustomizations.kustomize.toolkit.fluxcd.io -A
+kubectl get helmreleases -A
+
+# Detailed status
+kubectl describe helmrelease prometheus -n monitoring
+kubectl describe kustomization flux-system -n flux-system
+
+# View YAML
+kubectl get helmrelease prometheus -n monitoring -o yaml
+```
+
+#### Debugging
+
+```bash
+# Pod logs
+kubectl logs -n flux-system deploy/source-controller
+kubectl logs -n flux-system deploy/kustomize-controller
+kubectl logs -n flux-system deploy/helm-controller
+
+# Events (recent activity)
+kubectl get events -n monitoring --sort-by='.lastTimestamp'
+
+# Check pods
+kubectl get pods -n monitoring
+kubectl describe pod <pod-name> -n monitoring
+
+# Resource status
+kubectl get deploy,svc,pods -n monitoring
+```
+
+#### Port Forwarding
+
+```bash
+# Access Grafana locally
+kubectl port-forward svc/grafana 3000:80 -n monitoring
+
+# Access Prometheus locally
+kubectl port-forward svc/prometheus-server 9090:80 -n monitoring
+
+# Access your app
+kubectl port-forward svc/hello-gitops 8080:80
+```
+
+---
+
+### Kustomize CLI Cheat Sheet
+
+```bash
+# Initialize kustomization.yaml in current directory
+kustomize init
+
+# Add resources
+kustomize edit add resource deployment.yaml
+kustomize edit add resource ./subdir/
+
+# Build (render) kustomization
+kustomize build .
+kustomize build kubernetes/apps/
+
+# Apply directly (without Flux)
+kubectl apply -k .
+kubectl apply -k kubernetes/apps/
+
+# Dry-run
+kubectl apply -k . --dry-run=client -o yaml
+```
+
+---
+
+### Common YAML Templates
+
+#### HelmRelease (Remote Chart)
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: <release-name>
+  namespace: <deploy-to-namespace>
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: <chart-name>
+      version: "<semver-range>"  # e.g., "25.x" or ">=1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: <repo-name>
+        namespace: flux-system   # Required if different namespace
+  values:
+    key: value
+```
+
+#### HelmRelease (Local Chart from Git)
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: <release-name>
+  namespace: <deploy-to-namespace>
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: ./path/to/chart    # Relative to Git repo root
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+  values:
+    key: value
+```
+
+#### HelmRepository
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: <repo-name>
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.example.com
+```
+
+#### Kustomization (Flux)
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: <name>
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./kubernetes/apps
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+```
+
+#### kustomization.yaml (Kustomize)
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ./subdirectory/
+```
+
+---
+
+### Troubleshooting Decision Tree
+
+```
+Resource not deploying?
+│
+├─ Is GitRepository ready?
+│  └─ flux get sources git -A
+│     ├─ False → Check Git URL, branch, credentials
+│     └─ True → Continue
+│
+├─ Is HelmRepository ready? (if using remote chart)
+│  └─ flux get sources helm -A
+│     ├─ False → Check repository URL, network access
+│     └─ True → Continue
+│
+├─ Is Kustomization ready?
+│  └─ flux get kustomizations -A
+│     ├─ False → Check path exists, YAML syntax valid
+│     └─ True → Continue
+│
+├─ Is HelmRelease ready?
+│  └─ flux get helmreleases -A
+│     ├─ False → kubectl describe helmrelease <name> -n <ns>
+│     │         Check: chart exists, values valid, resources available
+│     └─ True → Continue
+│
+└─ Are pods running?
+   └─ kubectl get pods -n <namespace>
+      ├─ Pending → kubectl describe pod <name> - check resources, node selector
+      ├─ CrashLoopBackOff → kubectl logs <pod> - check app errors
+      └─ Running → Check service, ingress, network policies
+```
+
+---
+
+### Common Error Messages and Solutions
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `chart not found` | Wrong chart name or repo | Check HelmRepository URL, chart name spelling |
+| `upgrade retries exhausted` | Helm upgrade failed multiple times | Suspend, `helm uninstall`, resume |
+| `source not found` | Missing sourceRef namespace | Add `namespace: flux-system` to sourceRef |
+| `kustomize build failed` | Invalid YAML or missing resource | Run `kustomize build` locally to debug |
+| `authentication required` | Git/Helm repo needs credentials | Create Secret with credentials |
+| `target namespace not found` | Namespace doesn't exist | Create namespace or add to Kustomization |
+| `context deadline exceeded` | Network timeout | Check DNS, firewall, increase timeout |
+| `CRD not found` | CRD not installed | Install CRDs first, use dependsOn |
+
+---
+
+### Useful One-Liners
+
+```bash
+# Watch all Flux resources
+watch -n 5 'flux get all -A'
+
+# Find all failing resources
+flux get all -A | grep -i false
+
+# Get all Flux errors from last 10 minutes
+flux logs --level=error --since=10m
+
+# Force full reconciliation
+flux reconcile kustomization flux-system --with-source
+
+# Check what Flux would apply (dry-run)
+kustomize build kubernetes/ | kubectl apply --dry-run=client -f -
+
+# Export all HelmReleases to files
+for hr in $(kubectl get helmreleases -A -o name); do
+  kubectl get $hr -o yaml > $(basename $hr).yaml
+done
+
+# Restart all pods in a namespace (force re-pull)
+kubectl rollout restart deployment -n <namespace>
+
+# View Flux component versions
+flux version
+
+# Check resource events
+kubectl get events -A --sort-by='.lastTimestamp' | head -20
+```
+
+---
+
+### Environment Variables Reference
+
+```bash
+# GitHub Actions → Terraform
+TF_VAR_project_id         # GCP project ID
+TF_VAR_region             # GCP region
+TF_VAR_github_owner       # Repository owner
+TF_VAR_github_repository  # Repository name
+TF_VAR_github_token       # PAT for Flux
+
+# Flux environment
+KUBECONFIG               # Path to kubeconfig
+FLUX_SYSTEM_NAMESPACE    # Default: flux-system
+```
+
+---
+
+### File Structure Reference (Your Repo)
+
+```
+gitops/
+├── .github/workflows/
+│   ├── terraform-deploy.yml    # Bootstrap + deploy
+│   └── terraform-destroy.yml   # Teardown (manual)
+│
+├── terraform/
+│   ├── bootstrap/              # GCS bucket for state
+│   ├── main.tf                 # GKE + Flux bootstrap
+│   ├── variables.tf
+│   └── outputs.tf
+│
+├── kubernetes/
+│   ├── kustomization.yaml      # Root: includes flux-system + apps
+│   ├── flux-system/            # Flux manages itself
+│   │   ├── gotk-components.yaml
+│   │   ├── gotk-sync.yaml
+│   │   └── kustomization.yaml
+│   └── apps/
+│       ├── kustomization.yaml  # Includes all apps
+│       ├── prometheus/
+│       │   ├── kustomization.yaml
+│       │   ├── helmrepository.yaml
+│       │   └── helmrelease.yaml
+│       ├── grafana/
+│       │   ├── kustomization.yaml
+│       │   ├── helmrepository.yaml
+│       │   └── helmrelease.yaml
+│       └── hello-gitops/
+│           ├── kustomization.yaml
+│           └── helmrelease.yaml
+│
+└── charts/
+    └── hello-gitops/           # Local Helm chart
+        ├── Chart.yaml
+        ├── values.yaml
+        └── templates/
+            ├── _helpers.tpl
+            ├── deployment.yaml
+            ├── service.yaml
+            └── configmap.yaml
+```
+
+---
 
 Good luck with your preparation!
