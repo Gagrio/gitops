@@ -2,7 +2,7 @@
 
 > **Note**: All examples in this guide are from your actual gitops repository and can be run/tested on your GKE cluster.
 
-## Table of Contents
+## Table-of-Contents
 1. [GitHub Actions](#github-actions)
 2. [Flux CD](#flux-cd)
 3. [Kubernetes Concepts](#kubernetes-concepts)
