@@ -3,21 +3,21 @@
 > **Note**: All examples in this guide are from your actual gitops repository and can be run/tested on your GKE cluster.
 
 ## Table of Contents
-1. [GitHub Actions](#GitHub%20Actions)
-2. [Flux CD](#Flux%20CD)
-3. [Kubernetes Concepts](#Kubernetes%20Concepts)
-4. [GitOps Principles](#GitOps%20Principles)
-5. [Deployment Strategies](#Deployment%20Strategies)
-6. [Secrets Management](#Secrets%20Management)
-7. [Exposing Applications](#Exposing%20Applications)
-8. [Grafana Dashboard Provisioning](#Grafana%20Dashboard%20Provisioning)
-9. [Troubleshooting](#Troubleshooting)
-10. [Interview Questions](#Interview%20Questions)
-11. [Quick Reference](#Quick%20Reference)
+1. [GitHub Actions](#github-actions)
+2. [Flux CD](#flux-cd)
+3. [Kubernetes Concepts](#kubernetes-concepts)
+4. [GitOps Principles](#gitops-principles)
+5. [Deployment Strategies](#deployment-strategies)
+6. [Secrets Management](#secrets-management)
+7. [Exposing Applications](#exposing-applications)
+8. [Grafana Dashboard Provisioning](#grafana-dashboard-provisioning)
+9. [Troubleshooting](#troubleshooting)
+10. [Interview Questions](#interview-questions)
+11. [Quick Reference](#quick-reference)
 
 ---
 
-## GitHub Actions
+## GitHub-Actions
 
 ### What is GitHub Actions?
 
@@ -281,7 +281,7 @@ steps:
 
 ---
 
-## Flux CD
+## Flux-CD
 
 ### What is Flux CD?
 
@@ -719,7 +719,7 @@ flux create kustomization apps \
 
 ---
 
-## Kubernetes Concepts
+## Kubernetes-Concepts
 
 ### Kustomize
 
@@ -2280,7 +2280,7 @@ kubectl describe namespace monitoring
 
 ---
 
-## GitOps Principles
+## GitOps-Principles
 
 ### The Four Principles
 
@@ -2416,7 +2416,7 @@ git push
 
 ---
 
-## Deployment Strategies
+## Deployment-Strategies
 
 ### Overview
 
@@ -3020,7 +3020,7 @@ A:
 
 ---
 
-## Secrets Management
+## Secrets-Management
 
 ### The Challenge: Why Secrets Are Hard in GitOps
 
@@ -4428,7 +4428,7 @@ In your setup: Flux's Kustomization reads the kustomize kustomization.yaml files
 
 ---
 
-## Exposing Applications
+## Exposing-Applications
 
 ### LoadBalancer vs Ingress Trade-offs
 
@@ -4557,7 +4557,7 @@ In this GitOps showcase:
 
 ---
 
-## Grafana Dashboard Provisioning
+## Grafana-Dashboard-Provisioning
 
 ### Overview
 
@@ -5620,7 +5620,7 @@ watch -n 5 'flux get helmreleases -A'
 
 ---
 
-## Interview Questions
+## Interview-Questions
 
 ### GitOps Fundamentals
 
@@ -6021,7 +6021,7 @@ CRDs must exist before resources that use them. Options:
 
 ---
 
-## Quick Reference
+## Quick-Reference
 
 ### Flux CLI Cheat Sheet
 
