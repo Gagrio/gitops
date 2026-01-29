@@ -298,19 +298,19 @@ Flux is a GitOps operator that runs inside your Kubernetes cluster and continuou
 │ kubernetes/                                                     │
 │ ├── kustomization.yaml      → Root: includes flux-system + apps │
 │ ├── flux-system/            → Flux manages itself               │
-│ │   ├── gotk-components.yaml                                   │
-│ │   ├── gotk-sync.yaml      → GitRepository + Kustomization    │
-│ │   └── kustomization.yaml                                     │
+│ │   ├── gotk-components.yaml                                    │
+│ │   ├── gotk-sync.yaml      → GitRepository + Kustomization     │
+│ │   └── kustomization.yaml                                      │
 │ └── apps/                   → Your applications                 │
 │     ├── kustomization.yaml  → Includes prometheus + grafana     │
 │     ├── prometheus/                                             │
-│     │   ├── kustomization.yaml                                 │
-│     │   ├── helmrepository.yaml                                │
-│     │   └── helmrelease.yaml                                   │
+│     │   ├── kustomization.yaml                                  │
+│     │   ├── helmrepository.yaml                                 │
+│     │   └── helmrelease.yaml                                    │
 │     └── grafana/                                                │
-│         ├── kustomization.yaml                                 │
-│         ├── helmrepository.yaml                                │
-│         └── helmrelease.yaml                                   │
+│         ├── kustomization.yaml                                  │
+│         ├── helmrepository.yaml                                 │
+│         └── helmrelease.yaml                                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               │ Flux polls every 1m
@@ -319,13 +319,13 @@ Flux is a GitOps operator that runs inside your Kubernetes cluster and continuou
 │ GKE Cluster                                                     │
 ├─────────────────────────────────────────────────────────────────┤
 │ flux-system namespace:                                          │
-│   • source-controller (watches Git + Helm repos)               │
-│   • kustomize-controller (applies Kustomizations)              │
-│   • helm-controller (manages HelmReleases)                     │
+│   • source-controller (watches Git + Helm repos)                │
+│   • kustomize-controller (applies Kustomizations)               │
+│   • helm-controller (manages HelmReleases)                      │
 │                                                                 │
 │ monitoring namespace:                                           │
-│   • Prometheus (deployed by HelmRelease)                       │
-│   • Grafana (deployed by HelmRelease)                          │
+│   • Prometheus (deployed by HelmRelease)                        │
+│   • Grafana (deployed by HelmRelease)                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -607,8 +607,8 @@ resources:
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 5. Resources deployed to monitoring namespace                   │
-│    - Prometheus server, node-exporter, kube-state-metrics      │
-│    - Grafana with Prometheus datasource                        │
+│    - Prometheus server, node-exporter, kube-state-metrics       │
+│    - Grafana with Prometheus datasource                         │
 └────────────────────────┬────────────────────────────────────────┘
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -2029,23 +2029,23 @@ Your repository demonstrates the **recommended hybrid pattern**:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           TERRAFORM (Push)                                  │
 │  Creates:                                                                   │
-│  • GKE cluster                                                             │
-│  • GCS bucket for state                                                    │
-│  • Flux bootstrap (installs Flux, creates GitRepository)                   │
+│  • GKE cluster                                                              │
+│  • GCS bucket for state                                                     │
+│  • Flux bootstrap (installs Flux, creates GitRepository)                    │
 │                                                                             │
-│  Why Terraform: Cluster must exist before Flux can run inside it           │
+│  Why Terraform: Cluster must exist before Flux can run inside it            │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │ Terraform creates cluster + installs Flux
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           FLUX (Pull)                                       │
 │  Manages:                                                                   │
-│  • Prometheus (HelmRelease)                                                │
-│  • Grafana (HelmRelease)                                                   │
-│  • hello-gitops (HelmRelease from local chart)                             │
-│  • Future applications...                                                  │
+│  • Prometheus (HelmRelease)                                                 │
+│  • Grafana (HelmRelease)                                                    │
+│  • hello-gitops (HelmRelease from local chart)                              │
+│  • Future applications...                                                   │
 │                                                                             │
-│  Why Flux: Continuous reconciliation, self-healing, Git-based workflows    │
+│  Why Flux: Continuous reconciliation, self-healing, Git-based workflows     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -3365,7 +3365,7 @@ sops --rotate --in-place secret.enc.yaml
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. Store secret in external system (e.g., GCP Secret Manager)   │
-│    $ gcloud secrets create db-password --data-file=-             │
+│    $ gcloud secrets create db-password --data-file=-            │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
