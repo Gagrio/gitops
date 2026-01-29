@@ -3059,11 +3059,29 @@ data:
 
 ### Solutions Overview
 
-| Solution | How it works | Encryption | Secret storage | Complexity |
-|----------|--------------|------------|----------------|------------|
-| **Sealed Secrets** | Encrypt secrets, store encrypted in Git | Asymmetric (public/private key) | Git (encrypted) | Low |
-| **SOPS** | Encrypt YAML values, store in Git | KMS (AWS/GCP/Azure) or PGP | Git (encrypted) | Medium |
-| **External Secrets Operator** | Reference external secret managers | N/A (managed by provider) | Vault, AWS Secrets Manager, GCP Secret Manager | Medium-High |
+| Solution | How it works | Secret storage | Complexity | Best for |
+|----------|--------------|----------------|------------|----------|
+| **Sealed Secrets** | Encrypt secrets with cluster public key, store encrypted in Git | Git (encrypted) | Low | Single cluster, getting started |
+| **SOPS** | Encrypt YAML values with cloud KMS or PGP | Git (encrypted) | Medium | Multi-cluster, compliance, audit trail |
+| **External Secrets Operator (ESO)** | Store references in Git, ESO fetches from external secret manager | Vault, AWS/GCP/Azure Secret Manager | Medium-High | Centralized secrets, auto-rotation |
+| **Terraform + External Secrets** | Terraform creates secrets in GCP Secret Manager, ESO syncs to K8s | GCP Secret Manager → K8s | Medium-High | Infrastructure-as-code + GitOps |
+| **Terraform Direct K8s Secret** | Terraform creates K8s secrets directly (value in TF state) | K8s (via TF state) | Low | Dev/test, non-sensitive config |
+
+**Decision flowchart:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Do you have a cloud secret manager (Vault, AWS/GCP/Azure)?      │
+├──────────────────────┬──────────────────────────────────────────┤
+│         YES          │                   NO                     │
+│          ▼           │                    ▼                     │
+│  External Secrets    │     Do you need audit trail/compliance?  │
+│  Operator (ESO)      │     ┌─────────┬─────────┐                │
+│                      │     │   YES   │   NO    │                │
+│                      │     │    ▼    │    ▼    │                │
+│                      │     │  SOPS   │ Sealed  │                │
+│                      │     │ + KMS   │ Secrets │                │
+└──────────────────────┴─────┴─────────┴─────────┴────────────────┘
+```
 
 ---
 
@@ -3895,6 +3913,181 @@ resource "google_storage_bucket_iam_member" "state_access" {
 
 ---
 
+### Terraform and Kubernetes Secrets: Direct Creation vs External Secrets
+
+When using Terraform with Kubernetes, you have multiple approaches for creating secrets. Understanding the tradeoffs is crucial for production GitOps workflows.
+
+#### Direct Terraform K8s Secret Creation
+
+You CAN create secrets directly in your cluster using the `kubernetes_secret` resource:
+
+```hcl
+resource "kubernetes_secret" "db_password" {
+  metadata {
+    name      = "db-credentials"
+    namespace = "default"
+  }
+
+  data = {
+    password = random_password.db.result
+  }
+}
+```
+
+**The catch:** The secret value will be stored in your Terraform state file. Even with `sensitive = true`, the value is in the state (just masked in console output).
+
+#### Two Approaches: Architecture Comparison
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Direct Terraform → K8s Secret                               │
+│                                                             │
+│   Terraform ──creates──► K8s Secret                         │
+│       │                                                     │
+│       └── Secret value in state file (must secure state)    │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ Terraform + GCP Secret Manager + ESO (recommended)          │
+│                                                             │
+│   Terraform ──creates──► GCP Secret Manager                 │
+│                               │                             │
+│                          ESO syncs                          │
+│                               ▼                             │
+│                          K8s Secret                         │
+│                                                             │
+│   • Secret value never in Git or TF state                   │
+│   • Automatic rotation support                              │
+│   • Centralized audit logging                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### The Fundamental Terraform Limitation
+
+**Core principle:** Terraform MUST know the value of any resource it creates to store it in state for drift detection and future plans.
+
+This means:
+- When Terraform creates a `kubernetes_secret` resource, the secret value goes into state
+- When Terraform reads a secret from a data source, the value goes into state
+- Even with `sensitive = true`, the value is in state (just masked in console output)
+- This is by design - Terraform needs the full resource state to function
+
+**Comparison of approaches:**
+
+| Method | Value visibility |
+|--------|------------------|
+| `random_password` + encrypted GCS backend | Only in encrypted state |
+| Vault provider with dynamic secrets | Short-lived, but still in state during apply |
+| **ExternalSecret CR via Terraform** | TF only creates the *pointer*, not the secret |
+
+#### How Flux Consumes Terraform-Created Secrets
+
+Flux doesn't care how a secret was created. Once the Kubernetes secret exists in the cluster (whether created by Terraform, ESO, Sealed Secrets, or manually), Flux workloads reference it normally:
+
+**In Deployments:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        envFrom:
+        - secretRef:
+            name: db-credentials  # Created by any method
+        # Or individual keys:
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+```
+
+**In HelmReleases:**
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+spec:
+  valuesFrom:
+  - kind: Secret
+    name: db-credentials  # Created by any method
+    valuesKey: values.yaml
+```
+
+**In Flux resources:**
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+spec:
+  secretRef:
+    name: registry-credentials  # Created by any method
+```
+
+#### The ExternalSecret CR Approach
+
+The key insight: Terraform can create the ExternalSecret **manifest** (which is just a pointer/reference), and ESO creates the actual secret. Terraform never sees the secret value.
+
+```hcl
+# Terraform creates this manifest (just a reference, no secret value)
+resource "kubernetes_manifest" "external_secret" {
+  manifest = {
+    apiVersion = "external-secrets.io/v1beta1"
+    kind       = "ExternalSecret"
+    metadata = {
+      name      = "db-creds"
+      namespace = "default"
+    }
+    spec = {
+      secretStoreRef = {
+        name = "gcp-store"
+        kind = "ClusterSecretStore"
+      }
+      target = {
+        name = "db-credentials"
+      }
+      data = [
+        {
+          secretKey = "password"
+          remoteRef = {
+            key = "db-password"  # Reference to GCP Secret Manager
+          }
+        }
+      ]
+    }
+  }
+}
+
+# ESO then creates the actual K8s Secret - Terraform never sees the value
+```
+
+**What's in Terraform state:** Only the ExternalSecret manifest (metadata, references, configuration) - NOT the actual secret value.
+
+#### When to Use Each Approach
+
+**Direct `kubernetes_secret` resource:**
+- Simple development/test environments
+- Non-sensitive configuration (API endpoints, feature flags)
+- When state is properly encrypted and access-controlled
+- Small teams with strict state access controls
+
+**ExternalSecret CR via Terraform:**
+- Production GitOps workflows
+- When secrets must never touch Git or TF state
+- Multi-environment setups requiring secret rotation
+- Compliance requirements (SOC2, PCI-DSS, HIPAA)
+- Teams with separate security/ops responsibilities
+
+**Manual creation + data source:**
+- Legacy secrets that predate your IaC
+- Secrets managed by other teams/systems
+- When you need to reference but not manage secrets
+
+**Best practice for production:** Use ExternalSecret CRs managed by Terraform, pointing to centralized secret stores (GCP Secret Manager, Vault, AWS Secrets Manager). This separates secret storage from infrastructure code while maintaining GitOps workflows.
+
+---
+
 ### Your Setup: Adding Secrets Management
 
 **Recommendation for your showcase:** Start with Sealed Secrets (simplicity) or SOPS with GCP KMS (since you're on GCP).
@@ -3944,759 +4137,6 @@ echo -n supersecret | kubectl create secret generic test-secret \
 # 7. Commit sealed secret to Git
 git add test-sealed.yaml && git commit -m "Add test sealed secret" && git push
 ```
-
----
-
-### Old Interview Questions (From Original Section 5)
-
-#### GitHub Actions
-
-**Q: Explain your CI/CD workflow. What triggers deployments?**
-
-A: We have two workflows:
-1. **terraform-deploy.yml**: Triggered by push to master (plan only) or manual dispatch (plan or apply). It bootstraps GCP APIs, creates the GKE cluster, and installs Flux.
-2. **terraform-destroy.yml**: Manual only with confirmation. User must type "yes-destroy" to proceed.
-
-Push triggers only run `terraform plan` for safety. Actual infrastructure changes require manual `workflow_dispatch` with `apply` selected.
-
----
-
-**Q: How do you handle secrets in your workflows?**
-
-A: Secrets are stored encrypted in GitHub Secrets, never in code:
-- `GCP_SA_KEY`: Service account JSON for GCP authentication
-- `GCP_PROJECT_ID`, `GCP_REGION`: Configuration values
-- `FLUX_GITHUB_TOKEN`: PAT for Flux to access the Git repo
-
-They're accessed as `${{ secrets.SECRET_NAME }}` and automatically masked in logs. We use `TF_VAR_` prefix so Terraform picks them up automatically.
-
----
-
-**Q: Why use `needs: bootstrap` in your deploy job?**
-
-A: The `bootstrap` job enables required GCP APIs. The `deploy` job creates the GKE cluster which depends on those APIs being enabled. Without `needs: bootstrap`, both jobs would run in parallel and `deploy` would fail because APIs aren't ready. The `needs` keyword ensures sequential execution.
-
----
-
-### Flux CD
-
-**Q: Explain how Flux deploys Prometheus in your setup.**
-
-A:
-1. GitRepository polls `github.com/Gagrio/gitops.git` every minute
-2. Kustomize Controller reads `kubernetes/kustomization.yaml`, which includes `apps/prometheus/`
-3. In prometheus folder, there's a HelmRepository (points to prometheus-community charts) and HelmRelease (defines chart version and values)
-4. Helm Controller fetches the prometheus chart, renders it with our values (1 replica, no persistence, specific resource limits), and applies to the monitoring namespace
-5. This repeats every 5 minutes (HelmRelease interval) to ensure the deployment matches our specification
-
----
-
-**Q: What happens if someone runs `kubectl delete deployment prometheus-server`?**
-
-A: Within the reconciliation interval (10 minutes for Kustomization, 5 minutes for HelmRelease), Flux will detect that the deployment is missing and recreate it. This is self-healing - the cluster always converges to match Git state.
-
----
-
-**Q: Why are your HelmRepositories in flux-system but HelmReleases in monitoring?**
-
-A: Separation of concerns:
-- **HelmRepositories** are shared infrastructure - any HelmRelease can reference them. Placing them in `flux-system` makes them available cluster-wide.
-- **HelmReleases** are application-specific and deploy to their target namespace (`monitoring`). The namespace in the HelmRelease metadata determines where the Helm chart resources are created.
-
-**Important:** The `sourceRef` in HelmRelease must explicitly specify `namespace: flux-system` to find the HelmRepository in a different namespace. If omitted, Flux looks in the same namespace as the HelmRelease.
-
----
-
-**Q: What does `prune: true` do in your Kustomization?**
-
-A: When `prune: true`, if you delete a file from Git (e.g., remove `grafana/` folder), Flux will delete those resources from the cluster. Without pruning, orphaned resources would remain. It ensures Git is truly the single source of truth - nothing exists in the cluster that isn't defined in Git.
-
----
-
-**Q: How would you rollback a bad Prometheus deployment?**
-
-A:
-```bash
-# Find the last good commit
-git log --oneline kubernetes/apps/prometheus/
-
-# Revert the bad commit
-git revert <bad-commit-sha>
-git push
-
-# Flux automatically applies the reverted state
-# Or force immediate reconciliation:
-flux reconcile helmrelease prometheus -n monitoring
-```
-
-No `helm rollback` needed - Git history IS our rollback mechanism.
-
----
-
-### Kubernetes Concepts
-
-**Q: Explain the kustomization.yaml hierarchy in your setup.**
-
-A: It's a tree structure:
-1. **Root** (`kubernetes/kustomization.yaml`): Includes `flux-system` and `apps`
-2. **Apps** (`apps/kustomization.yaml`): Includes `prometheus` and `grafana`
-3. **Leaf** (`apps/prometheus/kustomization.yaml`): Includes actual resource files (`helmrepository.yaml`, `helmrelease.yaml`)
-
-Kustomize builds bottom-up, collecting all resources. Flux's Kustomization resource points to the root, so everything gets applied.
-
----
-
-**Q: How does Grafana connect to Prometheus?**
-
-A: Using Kubernetes DNS. In the HelmRelease values:
-```yaml
-url: http://prometheus-server.monitoring.svc.cluster.local
-```
-
-Format: `<service-name>.<namespace>.svc.cluster.local`
-
-Kubernetes DNS resolves this to the prometheus-server Service IP. This works from any namespace because it's a fully qualified domain name.
-
----
-
-**Q: Why use HelmRelease instead of `helm install`?**
-
-A:
-| `helm install` | HelmRelease |
-|----------------|-------------|
-| Imperative command | Declarative YAML |
-| Run once, manual updates | Continuous reconciliation |
-| No drift detection | Self-healing |
-| State in cluster only | State in Git |
-| Rollback via `helm rollback` | Rollback via `git revert` |
-
-HelmRelease gives us GitOps benefits: version control, audit trail, self-healing, and disaster recovery.
-
----
-
-### Helm Deep Dive
-
-**Q: Explain the structure of a Helm chart.**
-
-A: A Helm chart has this structure:
-```
-mychart/
-├── Chart.yaml        # Metadata: name, version, appVersion, description
-├── values.yaml       # Default configuration values
-├── templates/        # Kubernetes manifest templates
-│   ├── _helpers.tpl  # Reusable template snippets (define/include)
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   └── NOTES.txt     # Post-install instructions
-└── charts/           # Dependencies (sub-charts)
-```
-
-Key files:
-- `Chart.yaml`: Identity of the chart (name, version)
-- `values.yaml`: Defaults that users override
-- `_helpers.tpl`: DRY - define templates once, include everywhere
-- `NOTES.txt`: Shown after install (how to access the app)
-
----
-
-**Q: Explain this Helm template syntax: `{{ include "myapp.fullname" . | nindent 4 }}`**
-
-A: Breaking it down:
-- `include "myapp.fullname" .` - Call the template named "myapp.fullname", passing current context (`.`)
-- `|` - Pipe the result to next function
-- `nindent 4` - Add newline + 4 spaces indentation
-
-This is used to insert multi-line content (like labels) with proper YAML indentation:
-```yaml
-metadata:
-  labels:
-    {{- include "myapp.labels" . | nindent 4 }}
-```
-
-Result:
-```yaml
-metadata:
-  labels:
-    app.kubernetes.io/name: myapp
-    app.kubernetes.io/instance: myrelease
-```
-
----
-
-**Q: What's the difference between `{{ }}` and `{{- }}`?**
-
-A: Whitespace control:
-- `{{ }}` - Preserves whitespace
-- `{{- }}` - Removes whitespace **before** the tag
-- `{{ -}}` - Removes whitespace **after** the tag
-- `{{- -}}` - Removes whitespace on both sides
-
-Example:
-```yaml
-labels:
-  {{- include "myapp.labels" . | nindent 2 }}
-```
-
-Without `{{-`, you'd get an extra blank line before the labels.
-
----
-
-**Q: How do you deploy a local chart (from Git) vs a remote chart (from HelmRepository)?**
-
-A: Different `sourceRef` in HelmRelease:
-
-**Remote chart** (Prometheus):
-```yaml
-chart:
-  spec:
-    chart: prometheus           # Chart NAME
-    sourceRef:
-      kind: HelmRepository      # From Helm repo
-      name: prometheus-community
-```
-
-**Local chart** (hello-gitops):
-```yaml
-chart:
-  spec:
-    chart: ./charts/hello-gitops  # Chart PATH
-    sourceRef:
-      kind: GitRepository         # From Git repo
-      name: flux-system
-```
-
-Local charts don't need a separate HelmRepository - they use the existing GitRepository that Flux already watches.
-
----
-
-**Q: What are Helm hooks and when would you use them?**
-
-A: Hooks run at specific lifecycle points:
-- `pre-install` / `post-install` - Before/after first install
-- `pre-upgrade` / `post-upgrade` - Before/after upgrades
-- `pre-delete` / `post-delete` - Before/after uninstall
-
-Common use cases:
-- **pre-upgrade**: Database migration, backup
-- **post-install**: Seed data, cache warming
-- **pre-delete**: Backup before removal
-
-Example:
-```yaml
-metadata:
-  annotations:
-    "helm.sh/hook": pre-upgrade
-    "helm.sh/hook-delete-policy": hook-succeeded
-```
-
----
-
-**Q: How do you override values when using Flux HelmRelease?**
-
-A: In the `values:` section of HelmRelease:
-
-```yaml
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-spec:
-  chart:
-    spec:
-      chart: prometheus
-  values:
-    # These override the chart's values.yaml
-    server:
-      replicaCount: 2
-      resources:
-        limits:
-          memory: 1Gi
-```
-
-This is equivalent to:
-```bash
-helm install prometheus prometheus-community/prometheus \
-  --set server.replicaCount=2 \
-  --set server.resources.limits.memory=1Gi
-```
-
-But declarative and GitOps-managed.
-
----
-
-**Q: What's `_helpers.tpl` and why use it?**
-
-A: A file containing reusable template definitions. The `_` prefix means Helm won't try to render it as a manifest.
-
-Purpose:
-1. **DRY**: Define once, use everywhere
-2. **Consistency**: Same names/labels across all resources
-3. **Kubernetes compliance**: Handle 63-char name limits
-
-Example:
-```yaml
-{{- define "myapp.fullname" -}}
-{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-```
-
-Usage in templates:
-```yaml
-name: {{ include "myapp.fullname" . }}
-```
-
----
-
-### Deployment Strategies
-
-**Q: What's the difference between Rolling Update and Blue-Green deployment?**
-
-A:
-| Aspect | Rolling Update | Blue-Green |
-|--------|----------------|------------|
-| **Downtime** | Zero | Zero |
-| **Resource cost** | 1x + small surge | 2x (full duplicate) |
-| **Version mixing** | Yes (gradual) | No (instant switch) |
-| **Rollback speed** | Medium (gradual) | Instant (switch back) |
-| **Traffic control** | Pod-based (indirect) | Service selector (direct) |
-
-Rolling Update is Kubernetes default—good for standard apps. Blue-Green is for high-risk deployments needing instant rollback but costs double resources.
-
----
-
-**Q: When would you use Canary over Blue-Green?**
-
-A:
-- **Canary**: When you want to test with a small percentage of real users first, have good metrics/monitoring, and want to minimize blast radius. Common in high-traffic production apps.
-- **Blue-Green**: When you need instant switchover, can afford 2x resources, and want full testing before any user exposure. Common in regulated industries.
-
-Canary is gradual risk reduction with metrics-based decisions. Blue-Green is binary switch with instant rollback.
-
----
-
-**Q: How would you implement Blue-Green deployments in your GitOps setup?**
-
-A: Two approaches:
-
-**Approach 1: Two HelmReleases**
-```yaml
-# Create myapp-blue and myapp-green HelmReleases
-# Use different image tags and version labels
-# Service selector points to blue or green
-# To switch: edit Service selector in Git, push
-```
-
-**Approach 2: Flagger (automated)**
-```yaml
-# Install Flagger via Flux
-# Create Flagger Canary resource with analysis.type: BlueGreen
-# Flagger automates traffic switch based on metrics
-```
-
-Manual approach gives full control. Flagger automates based on health checks.
-
----
-
-**Q: Explain how Canary deployments work with Flagger.**
-
-A: Flagger automates progressive delivery:
-1. Detects Deployment image change
-2. Creates canary deployment with new version
-3. Gradually shifts traffic: 0% → 10% → 20% → ... → 50%
-4. At each step, queries Prometheus for metrics (error rate, latency)
-5. If metrics good: continue progression
-6. If metrics bad: automatic rollback
-7. On success: promotes canary to primary, deletes canary
-
-This removes manual intervention and ensures metrics-based rollout.
-
----
-
-### Secrets Management
-
-**Q: How do you handle secrets in GitOps? You can't commit them to Git.**
-
-A: Three main approaches:
-
-**1. Sealed Secrets** (simplest):
-- Encrypt secrets with public key (kubeseal)
-- Commit encrypted SealedSecret to Git
-- Controller in cluster decrypts with private key
-- Good for: Single cluster, getting started
-
-**2. SOPS** (enterprise):
-- Encrypt YAML values with cloud KMS (AWS/GCP/Azure) or PGP
-- Commit encrypted YAML to Git
-- Flux decrypts during reconciliation using KMS
-- Good for: Multi-cloud, audit requirements, key rotation
-
-**3. External Secrets Operator** (centralized):
-- Store secrets in external system (Vault, AWS Secrets Manager, GCP Secret Manager)
-- Commit reference (not secret) to Git
-- ESO fetches and syncs to Kubernetes Secret
-- Good for: Centralized secret management, automatic rotation
-
-**Rule:** Never commit plaintext secrets. Always encrypt or externalize before committing.
-
----
-
-**Q: What's the difference between Sealed Secrets and SOPS?**
-
-A:
-| Aspect | Sealed Secrets | SOPS |
-|--------|----------------|------|
-| **Encryption** | Asymmetric (RSA) in-cluster | KMS (AWS/GCP/Azure) or PGP |
-| **Decryption** | Sealed Secrets controller | Flux with KMS credentials |
-| **Key location** | Private key in cluster | Cloud KMS or PGP key |
-| **Audit trail** | No | Yes (via KMS logs) |
-| **Key rotation** | Manual (complex) | Built-in (`sops --rotate`) |
-| **Multi-cluster** | Re-encrypt per cluster | Same file, grant KMS access |
-
-Sealed Secrets: simpler, no external deps, good for single cluster.
-SOPS: enterprise-grade, audit trail, better for multi-cluster and compliance.
-
----
-
-**Q: How would you migrate from plaintext secrets to Sealed Secrets in your setup?**
-
-A:
-1. Install Sealed Secrets via Flux HelmRelease
-2. For each plaintext secret:
-   ```bash
-   # Create secret YAML (don't commit)
-   kubectl create secret generic my-secret --from-literal=key=value \
-     --dry-run=client -o yaml > secret.yaml
-
-   # Seal it
-   kubeseal < secret.yaml > sealed-secret.yaml
-
-   # Commit sealed version
-   git add sealed-secret.yaml
-   ```
-3. Delete plaintext secrets from Git (and history: `git filter-branch`)
-4. Push changes
-5. Flux applies SealedSecrets, controller decrypts to normal Secrets
-
-**Important:** Clean Git history of old plaintext secrets—they're cached forever otherwise.
-
----
-
-**Q: What are the security benefits of External Secrets Operator vs storing encrypted secrets in Git?**
-
-A:
-**External Secrets Operator advantages:**
-1. **Secrets never in Git**: Even encrypted secrets aren't in Git. Git compromise doesn't expose secret metadata.
-2. **Centralized rotation**: Rotate in secret manager, all clusters sync automatically
-3. **Granular IAM**: Fine-grained access control via cloud IAM
-4. **Audit trail**: Secret manager logs all access attempts
-5. **Compliance**: Meets requirements for storing secrets in certified systems (Vault, AWS Secrets Manager)
-
-**Trade-off:** External dependency. Secret manager outage means secrets don't sync.
-
----
-
-### Troubleshooting
-
-**Q: A HelmRelease is stuck in "Installing" state. How do you troubleshoot?**
-
-A: Systematic approach:
-```bash
-# 1. Check HelmRelease status
-kubectl describe helmrelease <name> -n <namespace>
-
-# 2. Check intermediate HelmChart
-kubectl get helmcharts -n flux-system
-kubectl describe helmchart <namespace>-<name> -n flux-system
-
-# 3. Check HelmRepository is ready
-flux get sources helm -A
-
-# 4. Check underlying Helm status
-helm list -n <namespace>
-helm status <name> -n <namespace>
-
-# 5. Check pod status (if Helm installed but pods failing)
-kubectl get pods -n <namespace>
-kubectl describe pod <pod-name> -n <namespace>
-
-# 6. Check controller logs
-kubectl logs -n flux-system deploy/helm-controller
-```
-
-**Common causes:** HelmRepository URL wrong, chart version doesn't exist, invalid values, resource conflicts, RBAC issues.
-
----
-
-**Q: How do you prevent unauthorized changes to the cluster in a GitOps setup?**
-
-A: Multiple layers:
-
-**1. Pull-based model:**
-- Nothing pushes to cluster from outside
-- Only Flux (in-cluster) applies changes
-- Attackers can't inject via CI/CD
-
-**2. RBAC on Flux ServiceAccount:**
-- Limit what Flux can deploy
-- Namespace-scoped permissions
-- Use separate ServiceAccounts per Kustomization
-
-**3. Git-based controls:**
-- Branch protection: require PR reviews
-- CODEOWNERS: require approval from specific teams
-- Signed commits: verify commit author
-
-**4. Policy enforcement:**
-- Kyverno/OPA Gatekeeper: validate resources before apply
-- Example: block privileged pods, require resource limits
-
-**5. Audit logging:**
-- Kubernetes audit logs: track all API calls
-- Git history: track all changes with author attribution
-
-**Result:** All changes flow through Git with review + approval. Direct kubectl changes are reverted by Flux.
-
----
-
-**Q: What are the performance implications of Flux reconciliation intervals?**
-
-A: Trade-off between responsiveness and API load:
-
-**Short intervals (1m GitRepository, 5m HelmRelease):**
-- **Pros:** Changes applied faster, drift corrected quickly
-- **Cons:** More API calls (Git, Kubernetes), higher CPU usage
-
-**Long intervals (10m GitRepository, 30m HelmRelease):**
-- **Pros:** Lower resource usage, less API load
-- **Cons:** Slower change propagation, drift persists longer
-
-**Your setup:**
-- GitRepository: 1m (Git polling - cheap operation)
-- Kustomization: 10m (good balance)
-- HelmRelease: 5m (good balance)
-
-**Best practices:**
-- GitRepository: 1-5m (cheap to poll)
-- Kustomization: 5-10m (moderate cost)
-- HelmRelease: 5-15m (Helm operations expensive)
-- Use `flux reconcile` for immediate deployment (don't wait)
-
-**At scale:** 1000 HelmReleases reconciling every 5m = 200 reconciliations/min. Monitor controller resource usage.
-
----
-
-**Q: Explain Flux's dependency management with dependsOn.**
-
-A: `dependsOn` ensures resources are applied in order.
-
-**Example:**
-```yaml
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: infrastructure
-spec:
-  interval: 10m
-  path: ./infrastructure
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: applications
-spec:
-  interval: 10m
-  path: ./applications
-  dependsOn:
-    - name: infrastructure  # Wait for infrastructure first
-```
-
-**Flow:**
-1. Flux applies `infrastructure` Kustomization
-2. Waits for `infrastructure` to be Ready
-3. Then applies `applications` Kustomization
-
-**Use cases:**
-- CRDs before CRs (install operator before custom resources)
-- Namespaces before resources (create namespace before deploying to it)
-- Secrets before apps (ensure secrets exist before app references them)
-- Infrastructure before apps (networking, storage, then applications)
-
-**Your setup:** Currently flat (no dependsOn). Could add:
-```yaml
-# prometheus depends on monitoring namespace existing
-dependsOn:
-  - name: namespaces
-```
-
----
-
-**Q: How do you monitor GitOps health? What metrics matter?**
-
-A: Key areas to monitor:
-
-**1. Reconciliation health:**
-```promql
-# Resources not Ready
-gotk_reconcile_condition{status="False",type="Ready"}
-
-# Reconciliation duration (detect slowness)
-gotk_reconcile_duration_seconds_bucket
-
-# Suspended resources (should be 0)
-gotk_suspend_status == 1
-```
-
-**2. Git connectivity:**
-```promql
-# GitRepository fetch failures
-sum(rate(gotk_reconcile_condition{kind="GitRepository",status="False"}[5m]))
-```
-
-**3. HelmRelease failures:**
-```promql
-# Failed HelmReleases
-count(gotk_reconcile_condition{kind="HelmRelease",status="False"})
-```
-
-**4. Controller health:**
-```bash
-# Controller pod restarts (should be 0)
-kubectl get pods -n flux-system
-```
-
-**Grafana dashboards:**
-- Import 15798 (Flux Cluster Stats)
-- Import 15800 (Flux Control Plane)
-
-**Alerts:**
-```yaml
-- alert: FluxReconciliationFailed
-  expr: gotk_reconcile_condition{status="False"} == 1
-  for: 10m
-  annotations:
-    summary: "Flux {{ $labels.kind }}/{{ $labels.name }} failing"
-```
-
-**Your setup:** Prometheus already installed. Add these metrics to monitoring!
-
----
-
-**Q: What happens if Git is unavailable (GitHub outage)?**
-
-A: Designed for this scenario:
-
-**What keeps working:**
-- All applications keep running (no impact on uptime)
-- Flux reconciles from cached artifacts (Git content, Helm charts)
-- Self-healing still works (Flux corrects drift using last known state)
-
-**What stops working:**
-- New Git commits can't be fetched
-- Can't deploy new versions
-- Can't see latest changes
-
-**How long can it last?**
-- Indefinitely for existing resources
-- Until Git returns for new deployments
-
-**When Git returns:**
-```bash
-flux reconcile source git flux-system
-# Fetches all missed commits, applies changes
-```
-
-**Mitigation:**
-- **Git mirrors**: Use multiple Git servers (GitHub, GitLab mirror)
-- **OCI registries**: Store Flux artifacts in OCI as backup
-- **Emergency kubectl**: Direct cluster access (breaks GitOps but restores service)
-
-**Your setup:** If GitHub down for 1 hour, your cluster keeps running fine. When GitHub returns, Flux auto-catches up.
-
----
-
-**Q: How do you handle HelmRelease rollbacks?**
-
-A: The GitOps way: rollback in Git.
-
-**Preferred method (GitOps):**
-```bash
-# Find the bad commit
-git log --oneline kubernetes/apps/myapp/
-
-# Revert it
-git revert <bad-commit-sha>
-git push
-
-# Flux automatically rolls back (within reconciliation interval)
-# Or force immediate:
-flux reconcile helmrelease myapp -n production
-```
-
-**Emergency method (imperative):**
-```bash
-# Helm rollback (bypasses GitOps)
-helm history myapp -n production
-helm rollback myapp <revision> -n production
-
-# Then update Git to match (restore GitOps)
-# Edit helmrelease.yaml to match rolled-back state
-git commit -am "Emergency rollback of myapp"
-git push
-```
-
-**Best practice:** Always prefer Git revert. Emergency Helm rollback is for "production is on fire" scenarios only.
-
----
-
-### GitOps Principles
-
-**Q: What are the core principles of GitOps and how does your setup implement them?**
-
-A:
-1. **Declarative**: All resources defined as YAML in `kubernetes/` directory
-2. **Versioned**: Everything in Git with full commit history
-3. **Pulled automatically**: Flux polls Git every minute, no CI pushes to cluster
-4. **Continuously reconciled**: Flux reconciles every 5-10 minutes, reverting drift
-
----
-
-**Q: How is your setup more secure than traditional CI/CD?**
-
-A:
-1. **Cluster credentials never leave cluster**: Flux runs inside GKE, only needs Git read access
-2. **GitHub Actions never touches cluster**: It only manages Terraform (infrastructure), not applications
-3. **Pull-based**: Cluster pulls from Git; nothing external pushes to cluster
-4. **Minimal permissions**: Flux only needs to read Git, not write
-
-If GitHub Actions is compromised, attacker can't directly access the cluster.
-
----
-
-**Q: How would you recover from a complete cluster loss?**
-
-A:
-1. Run terraform-deploy workflow with `apply` → Creates new GKE cluster
-2. Terraform bootstraps Flux, pointing to same Git repo
-3. Flux reads Git state and deploys everything:
-   - HelmRepositories (prometheus-community, grafana)
-   - HelmReleases (prometheus, grafana with all values)
-4. Full application state restored from Git
-
-Recovery time depends on Terraform + Helm deployments. No manual reconfiguration needed because Git has everything.
-
----
-
-**Q: What's the difference between Flux's Kustomization and kustomize's kustomization.yaml?**
-
-A: Confusingly similar names, different things:
-
-| Flux Kustomization | kustomize kustomization.yaml |
-|-------------------|------------------------------|
-| CRD: `kustomize.toolkit.fluxcd.io/v1` | Config file: `kustomize.config.k8s.io/v1beta1` |
-| Tells Flux WHAT to apply and HOW OFTEN | Tells kustomize WHICH files to include |
-| Has `interval`, `prune`, `sourceRef` | Has `resources`, `patches`, `commonLabels` |
-| Runs in cluster | Runs locally or in CI |
-
-In your setup: Flux's Kustomization reads the kustomize kustomization.yaml files to know what manifests to apply.
 
 ---
 
