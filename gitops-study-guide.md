@@ -3,17 +3,17 @@
 > **Note**: All examples in this guide are from your actual gitops repository and can be run/tested on your GKE cluster.
 
 ## Table of Contents
-1. [GitHub Actions](#github-actions)
-2. [Flux CD](#flux-cd)
-3. [Kubernetes Concepts](#kubernetes-concepts)
-4. [GitOps Principles](#gitops-principles)
-5. [Deployment Strategies](#deployment-strategies)
-6. [Secrets Management](#secrets-management)
-7. [Exposing Applications](#exposing-applications)
-8. [Grafana Dashboard Provisioning](#grafana-dashboard-provisioning)
-9. [Troubleshooting](#troubleshooting)
-10. [Interview Questions](#interview-questions)
-11. [Quick Reference](#quick-reference)
+1. [GitHub Actions](#GitHub%20Actions)
+2. [Flux CD](#Flux%20CD)
+3. [Kubernetes Concepts](#Kubernetes%20Concepts)
+4. [GitOps Principles](#GitOps%20Principles)
+5. [Deployment Strategies](#Deployment%20Strategies)
+6. [Secrets Management](#Secrets%20Management)
+7. [Exposing Applications](#Exposing%20Applications)
+8. [Grafana Dashboard Provisioning](#Grafana%20Dashboard%20Provisioning)
+9. [Troubleshooting](#Troubleshooting)
+10. [Interview Questions](#Interview%20Questions)
+11. [Quick Reference](#Quick%20Reference)
 
 ---
 
