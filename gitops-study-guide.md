@@ -18,6 +18,7 @@
 ---
 
 ## GitHub-Actions
+[↑ Back to ToC](#table-of-contents)
 
 ### What is GitHub Actions?
 
@@ -282,6 +283,7 @@ steps:
 ---
 
 ## Flux-CD
+[↑ Back to ToC](#table-of-contents)
 
 ### What is Flux CD?
 
@@ -720,6 +722,7 @@ flux create kustomization apps \
 ---
 
 ## Kubernetes-Concepts
+[↑ Back to ToC](#table-of-contents)
 
 ### Kustomize
 
@@ -2281,6 +2284,7 @@ kubectl describe namespace monitoring
 ---
 
 ## GitOps-Principles
+[↑ Back to ToC](#table-of-contents)
 
 ### The Four Principles
 
@@ -2417,6 +2421,7 @@ git push
 ---
 
 ## Deployment-Strategies
+[↑ Back to ToC](#table-of-contents)
 
 ### Overview
 
@@ -3021,6 +3026,7 @@ A:
 ---
 
 ## Secrets-Management
+[↑ Back to ToC](#table-of-contents)
 
 ### The Challenge: Why Secrets Are Hard in GitOps
 
@@ -4429,6 +4435,7 @@ In your setup: Flux's Kustomization reads the kustomize kustomization.yaml files
 ---
 
 ## Exposing-Applications
+[↑ Back to ToC](#table-of-contents)
 
 ### LoadBalancer vs Ingress Trade-offs
 
@@ -4558,6 +4565,7 @@ In this GitOps showcase:
 ---
 
 ## Grafana-Dashboard-Provisioning
+[↑ Back to ToC](#table-of-contents)
 
 ### Overview
 
@@ -4709,6 +4717,7 @@ flux reconcile helmrelease grafana -n monitoring
 ---
 
 ## Troubleshooting
+[↑ Back to ToC](#table-of-contents)
 
 ### Overview
 
@@ -5621,6 +5630,7 @@ watch -n 5 'flux get helmreleases -A'
 ---
 
 ## Interview-Questions
+[↑ Back to ToC](#table-of-contents)
 
 ### GitOps Fundamentals
 
@@ -6022,6 +6032,7 @@ CRDs must exist before resources that use them. Options:
 ---
 
 ## Quick-Reference
+[↑ Back to ToC](#table-of-contents)
 
 ### Flux CLI Cheat Sheet
 
