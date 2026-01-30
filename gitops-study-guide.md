@@ -9,12 +9,12 @@
 4. [GitOps Principles](#gitops-principles)
 5. [Deployment Strategies](#deployment-strategies)
 6. [Secrets Management](#secrets-management)
-7. [Exposing Applications](#exposing-applications)
-8. [Grafana Dashboard Provisioning](#grafana-dashboard-provisioning)
-9. [Troubleshooting](#troubleshooting)
-10. [Interview Questions](#interview-questions)
-11. [Quick Reference](#quick-reference)
-
+7. [Infrastructure as Code](#infrastructure-as-code)
+8. [Exposing Applications](#exposing-applications)
+9. [Grafana Dashboard Provisioning](#grafana-dashboard-provisioning)
+10. [Troubleshooting](#troubleshooting)
+11. [Interview Questions](#interview-questions)
+12. [Quick Reference](#quick-reference)
 ---
 
 ## GitHub-Actions
@@ -3648,7 +3648,71 @@ data:
 
 ---
 
-### Terraform + GCP Secret Manager
+### Your Setup: Adding Secrets Management
+
+**Recommendation for your showcase:** Start with Sealed Secrets (simplicity) or SOPS with GCP KMS (since you're on GCP).
+
+**Quick start with Sealed Secrets:**
+
+```bash
+# 1. Add Sealed Secrets via Flux
+mkdir -p kubernetes/apps/sealed-secrets
+
+flux create source helm sealed-secrets \
+  --url=https://bitnami-labs.github.io/sealed-secrets \
+  --namespace=flux-system \
+  --export > kubernetes/apps/sealed-secrets/helmrepository.yaml
+
+flux create helmrelease sealed-secrets \
+  --source=HelmRepository/sealed-secrets \
+  --chart=sealed-secrets \
+  --namespace=kube-system \
+  --export > kubernetes/apps/sealed-secrets/helmrelease.yaml
+
+# 2. Create kustomization.yaml
+cat > kubernetes/apps/sealed-secrets/kustomization.yaml << EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrepository.yaml
+  - helmrelease.yaml
+EOF
+
+# 3. Add to apps kustomization
+cd kubernetes/apps && kustomize edit add resource sealed-secrets && cd ../..
+
+# 4. Commit and push
+git add kubernetes/apps/sealed-secrets/ kubernetes/apps/kustomization.yaml
+git commit -m "Add Sealed Secrets for secret management"
+git push
+
+# 5. Wait for deployment, then seal a secret
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sealed-secrets -n kube-system --timeout=300s
+
+# 6. Create and seal a test secret
+echo -n supersecret | kubectl create secret generic test-secret \
+  --from-file=password=/dev/stdin \
+  --dry-run=client -o yaml | kubeseal -o yaml > test-sealed.yaml
+
+# 7. Commit sealed secret to Git
+git add test-sealed.yaml && git commit -m "Add test sealed secret" && git push
+```
+
+---
+
+## Infrastructure-as-Code
+[↑ Back to ToC](#table-of-contents)
+
+Infrastructure as Code (IaC) is the practice of managing and provisioning infrastructure through machine-readable definition files. This section covers two complementary tools: Terraform for infrastructure provisioning and Ansible for configuration management.
+
+---
+
+### Terraform
+
+Terraform is a declarative Infrastructure as Code tool that provisions and manages cloud resources. In the context of GitOps and secrets management, Terraform plays a crucial role in creating and managing secrets in cloud secret stores.
+
+#### Terraform + GCP Secret Manager
+
 
 **The Problem:** You can't hardcode secrets in Terraform code because they'd be committed to Git (and visible in plain text to anyone with repo access). Additionally, sensitive values in Terraform configuration files create security and compliance risks.
 
@@ -4088,55 +4152,1651 @@ resource "kubernetes_manifest" "external_secret" {
 
 ---
 
-### Your Setup: Adding Secrets Management
+### Ansible
+[↑ Back to ToC](#table-of-contents)
 
-**Recommendation for your showcase:** Start with Sealed Secrets (simplicity) or SOPS with GCP KMS (since you're on GCP).
+#### What is Ansible?
 
-**Quick start with Sealed Secrets:**
+Ansible is an open-source configuration management and automation tool that uses declarative YAML to describe system configurations, application deployments, and orchestration tasks. Unlike Terraform (which focuses on infrastructure provisioning), Ansible excels at configuration management and application deployment.
+
+**Key characteristics:**
+- Agentless architecture (uses SSH for Linux, WinRM for Windows)
+- Declarative YAML syntax (playbooks)
+- Idempotent operations (safe to run multiple times)
+- Extensive module library (6000+ modules)
+- Push-based model (control node pushes configs to targets)
+
+**Ansible vs Terraform - Quick comparison:**
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Terraform                                     │
+├──────────────────────────────────────────────────────────────────┤
+│ • Infrastructure provisioning (VMs, networks, cloud resources)   │
+│ • Declarative HCL syntax                                         │
+│ • State file tracks infrastructure                               │
+│ • Provider-based (AWS, GCP, Azure)                               │
+│ • Best for: CREATE infrastructure                                │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│                      Ansible                                     │
+├──────────────────────────────────────────────────────────────────┤
+│ • Configuration management + app deployment                      │
+│ • Declarative YAML syntax                                        │
+│ • Stateless (idempotent modules track state)                     │
+│ • SSH/WinRM based (agentless)                                    │
+│ • Best for: CONFIGURE infrastructure                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Architecture:**
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Control Node (where you run ansible)                             │
+│ ├── Inventory (hosts.ini, hosts.yml)                             │
+│ ├── Playbooks (*.yml)                                            │
+│ ├── Roles (reusable components)                                  │
+│ └── ansible.cfg (configuration)                                  │
+└───────────────────┬──────────────────────────────────────────────┘
+                    │ SSH/WinRM
+                    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Managed Nodes (target servers)                                   │
+│ • No agent required                                              │
+│ • Python 2.7+ or 3.5+ (for most modules)                         │
+│ • SSH access with sudo/root privileges                           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Key Concepts
+
+#### 1. Inventory
+
+The inventory defines which hosts Ansible manages. It can be static (INI/YAML files) or dynamic (scripts/plugins that query cloud providers).
+
+**Static inventory (INI format):**
+```ini
+# inventory/hosts.ini
+[webservers]
+web1.example.com ansible_host=192.168.1.10
+web2.example.com ansible_host=192.168.1.11
+
+[databases]
+db1.example.com ansible_host=192.168.1.20
+db2.example.com ansible_host=192.168.1.21
+
+[production:children]
+webservers
+databases
+
+[production:vars]
+ansible_user=deploy
+ansible_ssh_private_key_file=~/.ssh/prod_key
+```
+
+**Static inventory (YAML format):**
+```yaml
+# inventory/hosts.yml
+all:
+  children:
+    webservers:
+      hosts:
+        web1.example.com:
+          ansible_host: 192.168.1.10
+        web2.example.com:
+          ansible_host: 192.168.1.11
+    databases:
+      hosts:
+        db1.example.com:
+          ansible_host: 192.168.1.20
+    production:
+      children:
+        webservers:
+        databases:
+      vars:
+        ansible_user: deploy
+        ansible_ssh_private_key_file: ~/.ssh/prod_key
+```
+
+**Dynamic inventory (GCP example):**
+```yaml
+# inventory/gcp.yml
+plugin: gcp_compute
+projects:
+  - my-gcp-project
+regions:
+  - us-central1
+filters:
+  - labels.environment = production
+keyed_groups:
+  - key: labels.role
+    prefix: role
+auth_kind: serviceaccount
+service_account_file: /path/to/credentials.json
+```
+
+**Usage:**
+```bash
+# Use static inventory
+ansible-playbook -i inventory/hosts.ini playbook.yml
+
+# Use dynamic inventory
+ansible-playbook -i inventory/gcp.yml playbook.yml
+
+# List inventory hosts
+ansible-inventory -i inventory/hosts.ini --list
+```
+
+---
+
+#### 2. Playbooks
+
+Playbooks are YAML files that define automation tasks. They contain one or more "plays" that map groups of hosts to tasks.
+
+**Basic playbook structure:**
+```yaml
+# playbook.yml
+---
+- name: Configure web servers
+  hosts: webservers
+  become: yes  # Run tasks with sudo
+  vars:
+    http_port: 80
+    max_clients: 200
+
+  tasks:
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Copy nginx config
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+      notify:
+        - Restart nginx
+
+    - name: Ensure nginx is running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
+```
+
+**Key playbook elements:**
+
+| Element | Purpose | Example |
+|---------|---------|---------|
+| `name` | Description of play/task | `name: Install nginx` |
+| `hosts` | Target hosts from inventory | `hosts: webservers` |
+| `become` | Run with elevated privileges | `become: yes` |
+| `vars` | Variables for this play | `vars: http_port: 80` |
+| `tasks` | List of actions to perform | See tasks section |
+| `handlers` | Triggered on change | `notify: Restart nginx` |
+| `roles` | Include reusable role | `roles: - nginx` |
+| `tags` | Selective execution | `tags: [config, web]` |
+
+---
+
+#### 3. Modules
+
+Modules are reusable, standalone scripts that Ansible executes on managed nodes. Each module performs a specific task and returns JSON output.
+
+**Common modules:**
+
+| Category | Module | Purpose | Example |
+|----------|--------|---------|---------|
+| **Package** | `apt`, `yum`, `dnf` | Manage packages | Install nginx |
+| **Service** | `service`, `systemd` | Manage services | Start/stop nginx |
+| **File** | `copy`, `template`, `file` | Manage files | Copy config files |
+| **Command** | `command`, `shell`, `script` | Execute commands | Run arbitrary commands |
+| **Cloud** | `gcp_compute_instance`, `ec2_instance` | Manage cloud resources | Create VMs |
+| **Container** | `docker_container`, `kubernetes.core.k8s` | Manage containers | Deploy to K8s |
+| **Database** | `postgresql_db`, `mysql_db` | Manage databases | Create DB |
+| **User** | `user`, `group` | Manage users | Create service accounts |
+
+**Module examples:**
+
+```yaml
+# Package management
+- name: Install multiple packages
+  apt:
+    name:
+      - nginx
+      - postgresql
+      - python3-pip
+    state: present
+    update_cache: yes
+
+# File operations
+- name: Create directory
+  file:
+    path: /var/www/html
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: '0755'
+
+- name: Copy static file
+  copy:
+    src: files/index.html
+    dest: /var/www/html/index.html
+    owner: www-data
+    mode: '0644'
+
+- name: Template configuration
+  template:
+    src: templates/nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    validate: nginx -t -c %s
+  notify: Reload nginx
+
+# Service management
+- name: Ensure service is running
+  systemd:
+    name: nginx
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+# Command execution (not idempotent - use sparingly)
+- name: Run custom script
+  command: /usr/local/bin/deploy.sh
+  args:
+    creates: /var/lock/deployed  # Skip if file exists (idempotency)
+
+# Shell module (supports pipes, redirects)
+- name: Find large files
+  shell: find /var/log -type f -size +100M
+  register: large_files
+  changed_when: false  # Mark as not changing system
+
+# Cloud operations (GCP example)
+- name: Create GCP instance
+  gcp_compute_instance:
+    name: web-server-1
+    machine_type: n1-standard-1
+    zone: us-central1-a
+    project: my-project
+    auth_kind: serviceaccount
+    service_account_file: /path/to/creds.json
+    disks:
+      - auto_delete: true
+        boot: true
+        initialize_params:
+          source_image: projects/debian-cloud/global/images/family/debian-11
+    network_interfaces:
+      - network: default
+        access_configs:
+          - name: External NAT
+            type: ONE_TO_ONE_NAT
+    state: present
+
+# Kubernetes operations
+- name: Deploy to Kubernetes
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: production
+```
+
+**Module idempotency:**
+
+Ansible modules are designed to be idempotent - running them multiple times produces the same result without side effects.
+
+```yaml
+# This is idempotent
+- name: Ensure nginx is installed
+  apt:
+    name: nginx
+    state: present
+  # First run: Installs nginx (changed=true)
+  # Second run: Already installed (changed=false)
+
+# This is NOT idempotent (avoid when possible)
+- name: Append to file
+  shell: echo "timestamp=$(date)" >> /var/log/deployment.log
+  # Every run adds a new line
+```
+
+---
+
+#### 4. Variables and Facts
+
+**Variables** provide flexibility in playbooks. They can be defined in multiple places (precedence from low to high):
+
+1. Role defaults (`roles/nginx/defaults/main.yml`)
+2. Inventory variables (`group_vars/`, `host_vars/`)
+3. Playbook variables (`vars:` section)
+4. Extra variables (command line `-e`)
+
+```yaml
+# group_vars/webservers.yml
+nginx_port: 80
+nginx_worker_processes: 4
+app_environment: production
+
+# host_vars/web1.example.com.yml
+nginx_worker_processes: 8  # Override for this specific host
+
+# playbook.yml
+---
+- name: Configure nginx
+  hosts: webservers
+  vars:
+    nginx_user: www-data
+  tasks:
+    - name: Template nginx config
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+```
+
+**Using variables in templates (Jinja2):**
+```jinja2
+# templates/nginx.conf.j2
+user {{ nginx_user }};
+worker_processes {{ nginx_worker_processes }};
+
+http {
+    server {
+        listen {{ nginx_port }};
+        {% if app_environment == 'production' %}
+        access_log /var/log/nginx/access.log;
+        {% else %}
+        access_log /dev/stdout;
+        {% endif %}
+    }
+}
+```
+
+**Facts** are system information automatically gathered by Ansible:
+
+```yaml
+- name: Display facts
+  hosts: all
+  tasks:
+    - name: Show OS distribution
+      debug:
+        msg: "This server runs {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Show IP address
+      debug:
+        msg: "IP: {{ ansible_default_ipv4.address }}"
+
+    - name: Conditional based on OS
+      apt:
+        name: nginx
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Conditional based on memory
+      debug:
+        msg: "High memory server"
+      when: ansible_memtotal_mb > 16384
+```
+
+**Registering task output:**
+```yaml
+- name: Check if file exists
+  stat:
+    path: /etc/myapp/config.yml
+  register: config_file
+
+- name: Create config if missing
+  template:
+    src: config.yml.j2
+    dest: /etc/myapp/config.yml
+  when: not config_file.stat.exists
+
+- name: Run command and capture output
+  command: whoami
+  register: current_user
+
+- name: Display output
+  debug:
+    msg: "Current user is {{ current_user.stdout }}"
+```
+
+---
+
+#### 5. Roles
+
+Roles are reusable, shareable units of automation. They organize playbooks, variables, files, and templates into a standardized directory structure.
+
+**Role directory structure:**
+```
+roles/nginx/
+├── defaults/
+│   └── main.yml          # Default variables (lowest precedence)
+├── files/
+│   └── index.html        # Static files (copied as-is)
+├── handlers/
+│   └── main.yml          # Handlers (restart services)
+├── meta/
+│   └── main.yml          # Role metadata and dependencies
+├── tasks/
+│   └── main.yml          # Main task list
+├── templates/
+│   └── nginx.conf.j2     # Jinja2 templates
+└── vars/
+    └── main.yml          # Variables (higher precedence than defaults)
+```
+
+**Example role: nginx**
+
+```yaml
+# roles/nginx/defaults/main.yml
+nginx_port: 80
+nginx_worker_processes: auto
+nginx_user: www-data
+
+# roles/nginx/tasks/main.yml
+---
+- name: Install nginx
+  apt:
+    name: nginx
+    state: present
+    update_cache: yes
+
+- name: Create web root
+  file:
+    path: /var/www/html
+    state: directory
+    owner: "{{ nginx_user }}"
+    mode: '0755'
+
+- name: Deploy nginx config
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    validate: nginx -t -c %s
+  notify: Reload nginx
+
+- name: Ensure nginx is running
+  service:
+    name: nginx
+    state: started
+    enabled: yes
+
+# roles/nginx/handlers/main.yml
+---
+- name: Reload nginx
+  service:
+    name: nginx
+    state: reloaded
+
+- name: Restart nginx
+  service:
+    name: nginx
+    state: restarted
+
+# roles/nginx/templates/nginx.conf.j2
+user {{ nginx_user }};
+worker_processes {{ nginx_worker_processes }};
+
+http {
+    server {
+        listen {{ nginx_port }};
+        root /var/www/html;
+    }
+}
+```
+
+**Using roles in playbooks:**
+```yaml
+# playbook.yml
+---
+- name: Setup web servers
+  hosts: webservers
+  become: yes
+  roles:
+    - role: nginx
+      nginx_port: 8080
+      nginx_worker_processes: 4
+    - role: postgresql
+    - role: myapp
+
+# Or with more control:
+- name: Setup web servers
+  hosts: webservers
+  become: yes
+  tasks:
+    - name: Include nginx role
+      include_role:
+        name: nginx
+      vars:
+        nginx_port: 8080
+      when: install_nginx | default(true)
+```
+
+**Role dependencies:**
+```yaml
+# roles/myapp/meta/main.yml
+dependencies:
+  - role: nginx
+    nginx_port: 8080
+  - role: postgresql
+    postgres_version: 14
+```
+
+---
+
+#### Ansible vs Terraform: When to Use Each
+
+Both are Infrastructure as Code tools, but they serve different purposes and can work together.
+
+| Aspect | Terraform | Ansible |
+|--------|-----------|---------|
+| **Primary use case** | Provision infrastructure | Configure infrastructure + deploy apps |
+| **State management** | State file (terraform.tfstate) | Stateless (idempotent modules) |
+| **Language** | HCL (HashiCorp Configuration Language) | YAML + Jinja2 |
+| **Architecture** | Declarative + imperative | Declarative + procedural |
+| **Agent requirement** | None (API-based) | None (SSH/WinRM) |
+| **Cloud resources** | Excellent (native providers) | Good (via cloud modules) |
+| **Server config** | Limited (provisioners) | Excellent (core use case) |
+| **Execution model** | Plan → Apply (diff-based) | Push configuration |
+| **Dependency handling** | Automatic (graph-based) | Explicit (task order) |
+| **Drift detection** | Built-in (`terraform plan`) | Requires check mode or manual validation |
+| **Immutable infra** | Natural fit (destroy/recreate) | Possible but not primary design |
+| **Mutable infra** | Can update in-place | Natural fit (in-place updates) |
+| **Learning curve** | Medium (HCL + state concepts) | Low (YAML + SSH) |
+| **Community modules** | Providers (~3000) | Modules (~6000+) |
+
+**When to use Terraform:**
+- Provisioning cloud infrastructure (VPCs, VMs, databases, load balancers)
+- Managing infrastructure lifecycle (create, update, destroy)
+- Multi-cloud deployments
+- Infrastructure that should be immutable
+- Complex dependency graphs
+- Need state tracking and drift detection
+
+**When to use Ansible:**
+- Configuring servers (install packages, configure services)
+- Application deployment
+- Configuration management at scale
+- Orchestration (multi-step deployments)
+- Ad-hoc tasks and maintenance
+- Windows management (better WinRM support)
+- Network device configuration
+
+**Common pattern: Use both together**
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. Terraform: Provision infrastructure                           │
+│    • Create GCP project                                          │
+│    • Create VPC, subnets, firewall rules                         │
+│    • Create GKE cluster                                          │
+│    • Create VM instances                                         │
+│    • Output inventory for Ansible                                │
+└───────────────────┬──────────────────────────────────────────────┘
+                    │
+                    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. Ansible: Configure infrastructure                             │
+│    • Install packages on VMs                                     │
+│    • Configure monitoring agents                                 │
+│    • Deploy applications                                         │
+│    • Configure services                                          │
+│    • Day-2 operations                                            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Example: Terraform outputs to Ansible inventory**
+
+```hcl
+# terraform/main.tf
+output "ansible_inventory" {
+  value = templatefile("${path.module}/inventory.tpl", {
+    webservers = google_compute_instance.web[*].network_interface[0].access_config[0].nat_ip
+    databases  = google_compute_instance.db[*].network_interface[0].access_config[0].nat_ip
+  })
+}
+
+# terraform/inventory.tpl
+[webservers]
+%{ for ip in webservers ~}
+${ip}
+%{ endfor ~}
+
+[databases]
+%{ for ip in databases ~}
+${ip}
+%{ endfor ~}
+
+# Generate inventory
+$ terraform output -raw ansible_inventory > inventory/hosts.ini
+```
+
+---
+
+#### Basic Ansible Syntax and Examples
+
+#### Ad-hoc Commands
+
+Quick one-off tasks without writing playbooks.
 
 ```bash
-# 1. Add Sealed Secrets via Flux
-mkdir -p kubernetes/apps/sealed-secrets
+# Ping all hosts
+ansible all -i inventory/hosts.ini -m ping
 
-flux create source helm sealed-secrets \
-  --url=https://bitnami-labs.github.io/sealed-secrets \
-  --namespace=flux-system \
-  --export > kubernetes/apps/sealed-secrets/helmrepository.yaml
+# Check disk space
+ansible webservers -i inventory/hosts.ini -m shell -a "df -h"
 
-flux create helmrelease sealed-secrets \
-  --source=HelmRepository/sealed-secrets \
-  --chart=sealed-secrets \
-  --namespace=kube-system \
-  --export > kubernetes/apps/sealed-secrets/helmrelease.yaml
+# Install package on all hosts
+ansible all -i inventory/hosts.ini -m apt -a "name=vim state=present" --become
 
-# 2. Create kustomization.yaml
-cat > kubernetes/apps/sealed-secrets/kustomization.yaml << EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - helmrepository.yaml
-  - helmrelease.yaml
-EOF
+# Reboot servers
+ansible databases -i inventory/hosts.ini -m reboot --become
 
-# 3. Add to apps kustomization
-cd kubernetes/apps && kustomize edit add resource sealed-secrets && cd ../..
+# Copy file to all hosts
+ansible all -i inventory/hosts.ini -m copy -a "src=/tmp/file.txt dest=/tmp/file.txt"
 
-# 4. Commit and push
-git add kubernetes/apps/sealed-secrets/ kubernetes/apps/kustomization.yaml
-git commit -m "Add Sealed Secrets for secret management"
-git push
+# Gather facts
+ansible localhost -m setup
 
-# 5. Wait for deployment, then seal a secret
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=sealed-secrets -n kube-system --timeout=300s
-
-# 6. Create and seal a test secret
-echo -n supersecret | kubectl create secret generic test-secret \
-  --from-file=password=/dev/stdin \
-  --dry-run=client -o yaml | kubeseal -o yaml > test-sealed.yaml
-
-# 7. Commit sealed secret to Git
-git add test-sealed.yaml && git commit -m "Add test sealed secret" && git push
+# Check uptime
+ansible all -i inventory/hosts.ini -a "uptime"
 ```
+
+---
+
+#### Example 1: Simple Web Server Deployment
+
+```yaml
+# deploy-web.yml
+---
+- name: Deploy nginx web server
+  hosts: webservers
+  become: yes
+  vars:
+    web_port: 8080
+    web_user: www-data
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Create web directory
+      file:
+        path: /var/www/myapp
+        state: directory
+        owner: "{{ web_user }}"
+        mode: '0755'
+
+    - name: Deploy index page
+      copy:
+        content: |
+          <html>
+          <head><title>Hello from Ansible</title></head>
+          <body>
+            <h1>Deployed by Ansible</h1>
+            <p>Server: {{ ansible_hostname }}</p>
+            <p>IP: {{ ansible_default_ipv4.address }}</p>
+          </body>
+          </html>
+        dest: /var/www/myapp/index.html
+        owner: "{{ web_user }}"
+        mode: '0644'
+
+    - name: Configure nginx site
+      template:
+        src: templates/site.conf.j2
+        dest: /etc/nginx/sites-available/myapp
+      notify: Reload nginx
+
+    - name: Enable site
+      file:
+        src: /etc/nginx/sites-available/myapp
+        dest: /etc/nginx/sites-enabled/myapp
+        state: link
+      notify: Reload nginx
+
+    - name: Start nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Reload nginx
+      service:
+        name: nginx
+        state: reloaded
+```
+
+```jinja2
+# templates/site.conf.j2
+server {
+    listen {{ web_port }};
+    server_name {{ ansible_fqdn }};
+
+    root /var/www/myapp;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    access_log /var/log/nginx/myapp-access.log;
+    error_log /var/log/nginx/myapp-error.log;
+}
+```
+
+**Run it:**
+```bash
+ansible-playbook -i inventory/hosts.ini deploy-web.yml
+```
+
+---
+
+#### Example 2: Multi-Tier Application Deployment
+
+```yaml
+# deploy-app.yml
+---
+- name: Configure database servers
+  hosts: databases
+  become: yes
+  roles:
+    - postgresql
+  vars:
+    postgres_databases:
+      - name: myapp_production
+    postgres_users:
+      - name: myapp
+        password: "{{ vault_db_password }}"  # From Ansible Vault
+        priv: "myapp_production:ALL"
+
+- name: Configure web servers
+  hosts: webservers
+  become: yes
+  vars:
+    db_host: "{{ groups['databases'][0] }}"
+    app_version: "1.2.0"
+
+  tasks:
+    - name: Install Python and dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+
+    - name: Create app user
+      user:
+        name: myapp
+        system: yes
+        shell: /bin/bash
+        home: /opt/myapp
+
+    - name: Clone application repo
+      git:
+        repo: https://github.com/myorg/myapp.git
+        dest: /opt/myapp/app
+        version: "{{ app_version }}"
+      become_user: myapp
+
+    - name: Install Python dependencies
+      pip:
+        requirements: /opt/myapp/app/requirements.txt
+        virtualenv: /opt/myapp/venv
+      become_user: myapp
+
+    - name: Template app config
+      template:
+        src: templates/app-config.yml.j2
+        dest: /opt/myapp/app/config.yml
+        owner: myapp
+        mode: '0600'
+      notify: Restart application
+
+    - name: Install systemd service
+      template:
+        src: templates/myapp.service.j2
+        dest: /etc/systemd/system/myapp.service
+      notify:
+        - Reload systemd
+        - Restart application
+
+    - name: Start application
+      systemd:
+        name: myapp
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart application
+      systemd:
+        name: myapp
+        state: restarted
+
+- name: Configure load balancer
+  hosts: loadbalancer
+  become: yes
+  vars:
+    backend_servers: "{{ groups['webservers'] }}"
+
+  tasks:
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        state: present
+
+    - name: Configure HAProxy
+      template:
+        src: templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+      notify: Reload HAProxy
+
+    - name: Ensure HAProxy is running
+      service:
+        name: haproxy
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Reload HAProxy
+      service:
+        name: haproxy
+        state: reloaded
+```
+
+---
+
+#### Example 3: Kubernetes Deployment with Ansible
+
+```yaml
+# deploy-k8s.yml
+---
+- name: Deploy application to Kubernetes
+  hosts: localhost
+  connection: local
+  vars:
+    k8s_namespace: production
+    app_name: myapp
+    app_version: v1.2.0
+    replicas: 3
+
+  tasks:
+    - name: Create namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ k8s_namespace }}"
+
+    - name: Create ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ app_name }}-config"
+            namespace: "{{ k8s_namespace }}"
+          data:
+            APP_ENV: production
+            LOG_LEVEL: info
+
+    - name: Create Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ app_name }}-secret"
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            DATABASE_URL: "{{ vault_database_url }}"
+
+    - name: Deploy application
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ k8s_namespace }}"
+          spec:
+            replicas: "{{ replicas }}"
+            selector:
+              matchLabels:
+                app: "{{ app_name }}"
+            template:
+              metadata:
+                labels:
+                  app: "{{ app_name }}"
+              spec:
+                containers:
+                  - name: "{{ app_name }}"
+                    image: "gcr.io/myproject/{{ app_name }}:{{ app_version }}"
+                    ports:
+                      - containerPort: 8080
+                    envFrom:
+                      - configMapRef:
+                          name: "{{ app_name }}-config"
+                      - secretRef:
+                          name: "{{ app_name }}-secret"
+                    resources:
+                      requests:
+                        memory: "256Mi"
+                        cpu: "100m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+
+    - name: Create Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ k8s_namespace }}"
+          spec:
+            selector:
+              app: "{{ app_name }}"
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 8080
+            type: LoadBalancer
+
+    - name: Wait for deployment to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ k8s_namespace }}"
+        wait: yes
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+```
+
+**Prerequisites:**
+```bash
+# Install Kubernetes collection
+ansible-galaxy collection install kubernetes.core
+
+# Install Python dependencies
+pip3 install kubernetes
+```
+
+---
+
+#### Example 4: GCP Infrastructure with Ansible
+
+```yaml
+# provision-gcp.yml
+---
+- name: Provision GCP infrastructure
+  hosts: localhost
+  connection: local
+  vars:
+    project_id: my-gcp-project
+    region: us-central1
+    zone: us-central1-a
+    machine_type: n1-standard-2
+
+  tasks:
+    - name: Create VPC network
+      google.cloud.gcp_compute_network:
+        name: ansible-vpc
+        auto_create_subnetworks: no
+        project: "{{ project_id }}"
+        auth_kind: serviceaccount
+        service_account_file: /path/to/credentials.json
+        state: present
+      register: network
+
+    - name: Create subnet
+      google.cloud.gcp_compute_subnetwork:
+        name: ansible-subnet
+        ip_cidr_range: 10.0.1.0/24
+        network: "{{ network }}"
+        region: "{{ region }}"
+        project: "{{ project_id }}"
+        auth_kind: serviceaccount
+        service_account_file: /path/to/credentials.json
+        state: present
+      register: subnet
+
+    - name: Create firewall rule for SSH
+      google.cloud.gcp_compute_firewall:
+        name: allow-ssh
+        network: "{{ network }}"
+        allowed:
+          - ip_protocol: tcp
+            ports:
+              - '22'
+        source_ranges:
+          - 0.0.0.0/0
+        project: "{{ project_id }}"
+        auth_kind: serviceaccount
+        service_account_file: /path/to/credentials.json
+        state: present
+
+    - name: Create GCE instances
+      google.cloud.gcp_compute_instance:
+        name: "web-{{ item }}"
+        machine_type: "{{ machine_type }}"
+        zone: "{{ zone }}"
+        project: "{{ project_id }}"
+        auth_kind: serviceaccount
+        service_account_file: /path/to/credentials.json
+        disks:
+          - auto_delete: true
+            boot: true
+            initialize_params:
+              source_image: projects/debian-cloud/global/images/family/debian-11
+              disk_size_gb: 20
+        network_interfaces:
+          - network: "{{ network }}"
+            subnetwork: "{{ subnet }}"
+            access_configs:
+              - name: External NAT
+                type: ONE_TO_ONE_NAT
+        tags:
+          items:
+            - web
+            - production
+        state: present
+      loop: [1, 2, 3]
+      register: instances
+
+    - name: Add instances to inventory
+      add_host:
+        hostname: "{{ item.networkInterfaces[0].accessConfigs[0].natIP }}"
+        groups: webservers
+      loop: "{{ instances.results }}"
+
+- name: Configure instances
+  hosts: webservers
+  become: yes
+  tasks:
+    - name: Wait for SSH
+      wait_for_connection:
+        timeout: 300
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+```
+
+---
+
+#### Best Practices
+
+#### 1. Project Structure
+
+Use a consistent directory structure for Ansible projects:
+
+```
+ansible-project/
+├── ansible.cfg                 # Ansible configuration
+├── inventory/
+│   ├── production/
+│   │   ├── hosts.ini          # Production inventory
+│   │   ├── group_vars/
+│   │   │   ├── all.yml        # Variables for all hosts
+│   │   │   └── webservers.yml # Variables for web servers
+│   │   └── host_vars/
+│   │       └── web1.yml       # Variables for specific host
+│   └── staging/
+│       └── hosts.ini
+├── playbooks/
+│   ├── site.yml               # Main playbook
+│   ├── deploy.yml
+│   └── backup.yml
+├── roles/
+│   ├── common/                # Base configuration for all servers
+│   ├── nginx/
+│   ├── postgresql/
+│   └── myapp/
+├── files/                     # Static files
+│   └── ssl-certs/
+├── templates/                 # Jinja2 templates
+│   └── nginx.conf.j2
+├── group_vars/                # Global group variables
+│   └── all.yml
+└── vault/                     # Encrypted secrets
+    └── production.yml
+```
+
+**ansible.cfg example:**
+```ini
+[defaults]
+inventory = inventory/production/hosts.ini
+remote_user = deploy
+host_key_checking = False
+retry_files_enabled = False
+roles_path = ./roles
+vault_password_file = ~/.ansible-vault-pass
+forks = 20
+timeout = 30
+
+[privilege_escalation]
+become = True
+become_method = sudo
+become_user = root
+become_ask_pass = False
+
+[ssh_connection]
+pipelining = True
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s
+```
+
+---
+
+#### 2. Use Ansible Vault for Secrets
+
+Never commit secrets to Git. Use Ansible Vault to encrypt sensitive data.
+
+```bash
+# Create encrypted file
+ansible-vault create vault/production.yml
+
+# Edit encrypted file
+ansible-vault edit vault/production.yml
+
+# Encrypt existing file
+ansible-vault encrypt vars/secrets.yml
+
+# Decrypt file
+ansible-vault decrypt vars/secrets.yml
+
+# View encrypted file
+ansible-vault view vault/production.yml
+
+# Run playbook with vault password
+ansible-playbook -i inventory/hosts.ini playbook.yml --ask-vault-pass
+
+# Use vault password file
+ansible-playbook -i inventory/hosts.ini playbook.yml --vault-password-file ~/.vault-pass
+```
+
+**Encrypted vault file:**
+```yaml
+# vault/production.yml (encrypted)
+vault_db_password: supersecretpassword
+vault_api_key: abc123xyz789
+vault_ssl_key: |
+  -----BEGIN PRIVATE KEY-----
+  MIIEvQIBADANBg...
+  -----END PRIVATE KEY-----
+```
+
+**Using vault variables:**
+```yaml
+# playbook.yml
+---
+- name: Deploy app
+  hosts: webservers
+  vars_files:
+    - vault/production.yml
+  tasks:
+    - name: Create database user
+      postgresql_user:
+        name: myapp
+        password: "{{ vault_db_password }}"
+```
+
+---
+
+#### 3. Write Idempotent Playbooks
+
+Always design playbooks to be safely re-runnable.
+
+```yaml
+# Good: Idempotent
+- name: Ensure nginx is installed
+  apt:
+    name: nginx
+    state: present
+
+- name: Ensure directory exists
+  file:
+    path: /opt/myapp
+    state: directory
+
+- name: Ensure line in file
+  lineinfile:
+    path: /etc/hosts
+    line: "192.168.1.100 db.local"
+
+# Bad: Not idempotent
+- name: Append to file (runs every time)
+  shell: echo "log entry" >> /var/log/myapp.log
+
+# Fix: Use creates/removes or changed_when
+- name: Run initialization script
+  command: /opt/myapp/initialize.sh
+  args:
+    creates: /opt/myapp/.initialized
+
+- name: Check if already initialized
+  stat:
+    path: /opt/myapp/.initialized
+  register: init_status
+
+- name: Run initialization
+  command: /opt/myapp/initialize.sh
+  when: not init_status.stat.exists
+```
+
+---
+
+#### 4. Use Tags for Selective Execution
+
+```yaml
+# playbook.yml
+---
+- name: Full deployment
+  hosts: webservers
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      tags: [setup, packages]
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+      tags: [setup, packages, nginx]
+
+    - name: Configure nginx
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+      tags: [config, nginx]
+      notify: Reload nginx
+
+    - name: Deploy application
+      copy:
+        src: app.py
+        dest: /opt/app/app.py
+      tags: [deploy, app]
+
+  handlers:
+    - name: Reload nginx
+      service:
+        name: nginx
+        state: reloaded
+      tags: [nginx]
+```
+
+**Run specific tags:**
+```bash
+# Only run nginx config
+ansible-playbook playbook.yml --tags nginx
+
+# Run multiple tags
+ansible-playbook playbook.yml --tags "config,deploy"
+
+# Skip tags
+ansible-playbook playbook.yml --skip-tags setup
+
+# List available tags
+ansible-playbook playbook.yml --list-tags
+```
+
+---
+
+#### 5. Use Check Mode and Diff
+
+Test changes before applying them.
+
+```bash
+# Check mode (dry run)
+ansible-playbook playbook.yml --check
+
+# Show diff of file changes
+ansible-playbook playbook.yml --diff
+
+# Combine check and diff
+ansible-playbook playbook.yml --check --diff
+```
+
+**Make tasks support check mode:**
+```yaml
+- name: Run database migration
+  command: /opt/app/migrate.sh
+  check_mode: no  # Always run, even in check mode
+
+- name: Deploy config
+  template:
+    src: config.yml.j2
+    dest: /etc/myapp/config.yml
+  # Supports check mode by default (shows diff)
+```
+
+---
+
+#### 6. Error Handling
+
+```yaml
+- name: Handle errors gracefully
+  block:
+    - name: Attempt deployment
+      command: /opt/app/deploy.sh
+      register: deploy_result
+
+    - name: Verify deployment
+      uri:
+        url: http://localhost:8080/health
+        status_code: 200
+      retries: 5
+      delay: 10
+
+  rescue:
+    - name: Rollback on failure
+      command: /opt/app/rollback.sh
+
+    - name: Send notification
+      mail:
+        to: ops@example.com
+        subject: "Deployment failed on {{ ansible_hostname }}"
+        body: "{{ deploy_result.stderr }}"
+
+  always:
+    - name: Clean up temp files
+      file:
+        path: /tmp/deploy
+        state: absent
+
+# Ignore errors for specific tasks
+- name: Check service status
+  command: systemctl status myapp
+  register: service_status
+  ignore_errors: yes
+
+- name: Continue on failure
+  command: risky-command
+  failed_when: false
+```
+
+---
+
+#### 7. Use Roles from Ansible Galaxy
+
+Leverage community roles instead of reinventing the wheel.
+
+```bash
+# Install role from Galaxy
+ansible-galaxy install geerlingguy.nginx
+
+# Install from requirements file
+# requirements.yml
+---
+- name: geerlingguy.nginx
+  version: 3.1.4
+
+- src: https://github.com/myorg/custom-role.git
+  name: custom-role
+  version: v1.0.0
+
+# Install requirements
+ansible-galaxy install -r requirements.yml
+
+# Use in playbook
+- name: Setup web server
+  hosts: webservers
+  roles:
+    - geerlingguy.nginx
+```
+
+---
+
+#### 8. Performance Optimization
+
+```yaml
+# ansible.cfg
+[defaults]
+forks = 50              # Parallel execution (default 5)
+pipelining = True       # Reduce SSH operations
+gathering = smart       # Only gather facts when needed
+fact_caching = jsonfile # Cache facts between runs
+fact_caching_timeout = 3600
+
+# In playbooks
+- name: Skip fact gathering when not needed
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Simple task
+      ping:
+
+# Use async for long-running tasks
+- name: Long running task
+  command: /usr/bin/long-task
+  async: 3600           # Timeout
+  poll: 10              # Check every 10s
+
+# Delegate expensive tasks
+- name: Run on localhost
+  command: heavy-computation
+  delegate_to: localhost
+  run_once: true        # Only run once, not per host
+```
+
+---
+
+#### 9. Testing Playbooks
+
+```bash
+# Syntax check
+ansible-playbook playbook.yml --syntax-check
+
+# List tasks
+ansible-playbook playbook.yml --list-tasks
+
+# List hosts
+ansible-playbook playbook.yml --list-hosts
+
+# Step through playbook
+ansible-playbook playbook.yml --step
+
+# Start at specific task
+ansible-playbook playbook.yml --start-at-task="Install nginx"
+
+# Use molecule for role testing
+pip install molecule molecule-docker
+molecule init role myrole
+molecule test
+```
+
+---
+
+#### GitOps Integration: Ansible in CI/CD
+
+Ansible works well in GitOps pipelines for configuration management and deployment.
+
+**GitHub Actions + Ansible example:**
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy with Ansible
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - 'inventory/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install kubernetes.core
+          ansible-galaxy collection install google.cloud
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Run Ansible playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: false
+          VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          echo "$VAULT_PASSWORD" > .vault-pass
+          ansible-playbook \
+            -i inventory/production/hosts.ini \
+            playbooks/deploy.yml \
+            --vault-password-file .vault-pass \
+            --diff
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_rsa .vault-pass
+```
+
+---
+
+#### Ansible vs Terraform: Decision Matrix
+
+Use this matrix to decide which tool to use for specific tasks:
+
+| Task | Terraform | Ansible | Rationale |
+|------|-----------|---------|-----------|
+| Create GCP VPC | ✅ Yes | ⚠️ Possible | Terraform has better state management for cloud resources |
+| Create GKE cluster | ✅ Yes | ⚠️ Possible | Terraform is purpose-built for infrastructure provisioning |
+| Install packages on VMs | ⚠️ Possible | ✅ Yes | Ansible's core use case |
+| Configure nginx | ⚠️ Possible | ✅ Yes | Configuration management is Ansible's strength |
+| Deploy Kubernetes manifests | ⚠️ Possible | ✅ Yes | Both work, Ansible better for complex logic |
+| Manage cloud DNS | ✅ Yes | ⚠️ Possible | Terraform better for cloud resources |
+| Rolling deployments | ❌ No | ✅ Yes | Ansible has orchestration capabilities |
+| Database migrations | ❌ No | ✅ Yes | Procedural task, requires ordering |
+| Create IAM policies | ✅ Yes | ⚠️ Possible | Terraform tracks permissions better |
+| Configure monitoring | ⚠️ Possible | ✅ Yes | Agent installation and config is Ansible territory |
+| Destroy infrastructure | ✅ Yes | ❌ No | Terraform tracks what it created |
+| Day-2 operations | ❌ No | ✅ Yes | Ongoing maintenance is Ansible's purpose |
+
+**Legend:**
+- ✅ Yes: Ideal tool for this task
+- ⚠️ Possible: Can do it, but not ideal
+- ❌ No: Not designed for this task
+
+---
+
+#### Common Ansible + GitOps Patterns
+
+#### Pattern 1: Terraform Provisions, Ansible Configures
+
+```bash
+# Workflow
+1. Terraform creates infrastructure
+2. Terraform outputs inventory
+3. Ansible configures infrastructure
+
+# terraform/outputs.tf
+output "webserver_ips" {
+  value = google_compute_instance.web[*].network_interface[0].access_config[0].nat_ip
+}
+
+# Generate Ansible inventory from Terraform
+$ terraform output -json webserver_ips | jq -r '.[]' > inventory/hosts
+
+# Run Ansible
+$ ansible-playbook -i inventory/hosts configure.yml
+```
+
+#### Pattern 2: Ansible for Kubernetes Deployments
+
+```yaml
+# Instead of kubectl or Flux, use Ansible for complex deployments
+- name: Blue-green deployment
+  hosts: localhost
+  tasks:
+    - name: Deploy green version
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'deployment-green.yml.j2') }}"
+
+    - name: Wait for green to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        name: app-green
+        namespace: production
+        wait: yes
+
+    - name: Switch service to green
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: app
+          spec:
+            selector:
+              version: green  # Switch traffic
+
+    - name: Delete blue version
+      kubernetes.core.k8s:
+        state: absent
+        kind: Deployment
+        name: app-blue
+        namespace: production
+```
+
+#### Pattern 3: Ansible Tower/AWX for GitOps
+
+Use Ansible Tower or AWX (open source) as the GitOps engine:
+- Store playbooks in Git
+- Tower pulls on commit
+- Tower executes playbooks
+- Provides RBAC, audit logs, and UI
 
 ---
 
