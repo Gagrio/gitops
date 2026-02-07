@@ -1,3483 +1,3193 @@
-# RKE/Kubernetes Support Interview Prep - Deep Dive
+# RKE2 & Kubernetes Internals - Interview Prep
 
-**Timeline**: 1 day intensive, hands-on learning
-**Goal**: Deep understanding of Kubernetes internals and RKE architecture
-**Focus**: RKE1/RKE2, Control Plane Components, CRDs, CNI, CSI, Production Troubleshooting
+**Timeline**: 1-day intensive, hands-on preparation
+**Goal**: Deep understanding of RKE2 architecture, Kubernetes internals, and production troubleshooting
+**Focus**: RKE2-specific implementation, component communication, failure modes, and systematic debugging
 
 ---
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Day 3: RKE Deep Dive + Kubernetes Internals](#day-3-rke-deep-dive--kubernetes-internals)
-   - RKE Architecture & Fundamentals
-   - Kubernetes Control Plane Internals
-   - CRDs, Controllers & Operators
-   - CNI Networking (Canal/Calico/Flannel)
-   - CSI Storage & Longhorn
-   - Cluster Lifecycle & Troubleshooting
-3. [Final Prep Checklist](#day-3---final-prep-checklist)
+2. [RKE2 Architecture](#rke2-architecture)
+   - [Why RKE2](#why-rke2)
+   - [Architecture Overview](#architecture-overview)
+   - [Installation & Configuration](#installation--configuration)
+   - [systemd Service Model](#systemd-service-model)
+3. [Kubernetes Control Plane Internals](#kubernetes-control-plane-internals)
+   - [API Server Deep Dive](#api-server-deep-dive)
+   - [Request Flow Through the System](#request-flow-through-the-system)
+   - [etcd Operations](#etcd-operations)
+   - [Scheduler Internals](#scheduler-internals)
+   - [Controller Manager](#controller-manager)
+4. [CRDs & Controllers](#crds--controllers)
+   - [Custom Resource Definitions](#custom-resource-definitions)
+   - [Controller Pattern](#controller-pattern)
+   - [Operator Pattern](#operator-pattern)
+5. [CNI Networking](#cni-networking)
+   - [CNI Fundamentals](#cni-fundamentals)
+   - [Canal (Calico + Flannel)](#canal-calico--flannel)
+   - [Network Policies](#network-policies)
+6. [CSI Storage & Longhorn](#csi-storage--longhorn)
+   - [CSI Architecture](#csi-architecture)
+   - [Longhorn Deep Dive](#longhorn-deep-dive)
+   - [Backup and Restore](#backup-and-restore)
+7. [Cluster Lifecycle](#cluster-lifecycle)
+   - [Upgrades](#upgrades)
+   - [Backup & Disaster Recovery](#backup--disaster-recovery)
+   - [Certificate Management](#certificate-management)
+8. [Troubleshooting Guide](#troubleshooting-guide)
+   - [Systematic Debugging Approach](#systematic-debugging-approach)
+   - [RKE2-Specific Issues](#rke2-specific-issues)
+   - [etcd Troubleshooting](#etcd-troubleshooting)
+   - [Networking Issues](#networking-issues)
+   - [Storage Issues](#storage-issues)
+   - [Node Problems](#node-problems)
+   - [Upgrade Failures](#upgrade-failures)
+9. [Interview Questions](#interview-questions)
+10. [Quick Reference](#quick-reference)
 
 ---
 
 ## Prerequisites
 
-This interview prep assumes you have foundational knowledge of Kubernetes, Terraform, and basic cluster operations.
-
-**Required Knowledge:**
-- Basic Kubernetes concepts (Pods, Deployments, Services, etc.)
+**Assumed Knowledge:**
+- Basic Kubernetes concepts (Pods, Deployments, Services, ConfigMaps, Secrets)
 - kubectl command-line usage
-- YAML manifest structure
-- Basic Linux systems administration
-- Networking fundamentals (TCP/IP, DNS, routing)
-
-**For Kubernetes Basics Review:**
-Refer to [INTERVIEW_PREP_GITOPS.md](./INTERVIEW_PREP_GITOPS.md) for foundational material on:
-- Kubernetes resource types and their purposes
-- kubectl debugging commands
-- Common troubleshooting patterns
-- GitOps workflows with Flux
+- Linux systems administration (systemd, journalctl, basic networking)
+- Container fundamentals (not Docker-specific)
 
 **Required Tools:**
 
 ```bash
-# Check required tools are installed
+# Check required tools
 command -v kubectl && echo "✓ kubectl" || echo "✗ kubectl MISSING"
-command -v docker && echo "✓ docker" || echo "✗ docker MISSING"
-command -v crictl && echo "✓ crictl (optional)" || echo "✗ crictl not installed"
+command -v crictl && echo "✓ crictl" || echo "✗ crictl MISSING"
 command -v etcdctl && echo "✓ etcdctl (optional)" || echo "✗ etcdctl not installed"
 ```
 
-**Focus Areas for This Interview:**
-- RKE-specific architecture and components
-- Deep Kubernetes control plane understanding
-- Custom Resource Definitions and operators
-- Container networking (CNI) implementation details
-- Container storage (CSI) and Longhorn
-- Production cluster troubleshooting methodology
-- High availability and disaster recovery
+**Focus Areas:**
+- **RKE2 architecture** - How it differs from vanilla Kubernetes and RKE1
+- **Component communication** - API server ↔ etcd ↔ controllers ↔ kubelet
+- **Failure modes** - What happens when components fail
+- **Troubleshooting** - Systematic diagnosis of production issues
+- **Storage & Networking** - Longhorn and Canal/Calico deep dives
+
+**Estimated Time Breakdown:**
+- RKE2 Architecture: 1.5 hours
+- Kubernetes Internals: 2 hours
+- CRDs & Controllers: 1 hour
+- CNI Networking: 1 hour
+- CSI Storage & Longhorn: 1 hour
+- Cluster Lifecycle: 45 minutes
+- Troubleshooting Guide: 1.5 hours
+- **Total: ~8.25 hours**
 
 ---
 
-## Day 3: RKE Deep Dive + Kubernetes Internals
+## RKE2 Architecture
 
-This section focuses on Rancher Kubernetes Engine (RKE), Kubernetes control plane internals, and advanced topics for supporting production RKE clusters.
+**Time: 1.5 hours**
 
-### RKE ARCHITECTURE & FUNDAMENTALS - 2.5 hours
+### Why RKE2
 
-#### RKE1 vs RKE2 Architecture (45 mins)
+RKE2 is Rancher's next-generation Kubernetes distribution, designed for security and compliance from the ground up.
 
-**Understanding the Differences:**
+**Key Differentiators:**
 
-| Aspect | RKE1 | RKE2 |
-|--------|------|------|
-| **Architecture** | Docker-based, components in containers | containerd-native, some as static pods |
-| **Installation** | CLI tool (rke binary) generates config | systemd service, more like a distro |
-| **Security** | CIS hardening manual | CIS 1.6 compliant by default |
-| **Configuration** | cluster.yml (single file) | config.yaml + server/agent model |
-| **Upgrades** | Manual rke up with new version | systemd service upgrade or helm |
-| **etcd** | etcd in Docker container | etcd as part of rke2-server process |
-| **Network Policies** | Optional, manual | Enabled by default |
-| **PSPs/PSS** | Manual configuration | Pod Security Standards by default |
-| **Use Case** | Legacy, simpler setups | Production, compliance-focused |
+| Feature | RKE2 | Vanilla K8s (kubeadm) |
+|---------|------|----------------------|
+| **Security** | CIS 1.6 compliant by default | Manual hardening required |
+| **Container Runtime** | containerd only | containerd/CRI-O |
+| **Installation** | systemd service (like a distro) | Manual component setup |
+| **Architecture** | Server/Agent binary model | Separate component binaries |
+| **Pod Security** | Pod Security Standards enabled | Optional |
+| **Network Policies** | Enabled by default | Optional |
+| **FIPS 140-2** | Available | Manual setup |
+| **etcd** | Embedded in rke2-server | External or static pod |
 
-**RKE1 Architecture Deep Dive:**
+**When to Use RKE2:**
+- Production workloads requiring compliance (PCI-DSS, HIPAA, FedRAMP)
+- Edge deployments needing minimal footprint
+- Air-gapped environments
+- Organizations needing security-by-default
+- Simplified operations compared to managing individual K8s components
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Control Plane                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   etcd       │  │  API Server  │  │  Scheduler   │      │
-│  │  (Docker)    │  │   (Docker)   │  │   (Docker)   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│  ┌──────────────────────────────────┐                       │
-│  │   Controller Manager (Docker)    │                       │
-│  └──────────────────────────────────┘                       │
-│  ┌──────────────────────────────────┐                       │
-│  │    kubelet + kube-proxy + CNI    │                       │
-│  └──────────────────────────────────┘                       │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                    Docker Engine
-                            │
-                      Host OS
-```
+### Architecture Overview
 
-**RKE2 Architecture Deep Dive:**
+**RKE2 Process Model:**
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        rke2-server                          │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Embedded etcd + API Server + Scheduler + Controller│    │
-│  │  Manager (all in rke2-server systemd service)       │    │
-│  └─────────────────────────────────────────────────────┘    │
-│  ┌──────────────────────────────────────┐                   │
-│  │    kubelet (part of rke2-server)     │                   │
-│  └──────────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                      containerd
-                            │
-                      Host OS (systemd)
+┌─────────────────────────────────────────────────────────────────┐
+│                     Control Plane Node                          │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │              rke2-server (systemd service)                │  │
+│  │                                                           │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │  │
+│  │  │   etcd      │  │ API Server  │  │  Scheduler  │      │  │
+│  │  │ (embedded)  │  │             │  │             │      │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘      │  │
+│  │  ┌─────────────────────────────────────────────────┐      │  │
+│  │  │        Controller Manager                       │      │  │
+│  │  └─────────────────────────────────────────────────┘      │  │
+│  │  ┌─────────────────────────────────────────────────┐      │  │
+│  │  │              kubelet                            │      │  │
+│  │  └─────────────────────────────────────────────────┘      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                              │                                  │
+│                    ┌─────────┴─────────┐                        │
+│                    │   containerd      │                        │
+│                    └───────────────────┘                        │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                        Worker Node                              │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │              rke2-agent (systemd service)                 │  │
+│  │                                                           │  │
+│  │  ┌─────────────────────────────────────────────────┐      │  │
+│  │  │              kubelet                            │      │  │
+│  │  └─────────────────────────────────────────────────┘      │  │
+│  │  ┌─────────────────────────────────────────────────┐      │  │
+│  │  │            kube-proxy                           │      │  │
+│  │  └─────────────────────────────────────────────────┘      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                              │                                  │
+│                    ┌─────────┴─────────┐                        │
+│                    │   containerd      │                        │
+│                    └───────────────────┘                        │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Key Architectural Differences:**
+**Key Architectural Points:**
 
-1. **Process Model**:
-   - RKE1: Each component in separate Docker container
-   - RKE2: Single rke2-server/rke2-agent binary as systemd service
+1. **Single Binary Model**:
+   - `rke2-server`: Control plane + kubelet (can schedule workloads on control nodes)
+   - `rke2-agent`: Worker node kubelet + kube-proxy
+   - Both are systemd services managed by the OS
 
-2. **Container Runtime**:
-   - RKE1: Docker required
-   - RKE2: containerd only (Docker not needed)
+2. **Embedded etcd**:
+   - etcd runs as part of rke2-server process (not a separate container/process)
+   - Simplifies HA setup and management
+   - Reduces surface area for attacks
 
-3. **Security Posture**:
-   - RKE1: Open by default, harden manually
-   - RKE2: Hardened by default (CIS 1.6 compliant)
+3. **containerd Native**:
+   - No Docker dependency
+   - Uses containerd directly via CRI
+   - More secure and lightweight
 
-4. **Management**:
-   - RKE1: rke CLI tool manages cluster lifecycle
-   - RKE2: systemd manages service, kubectl for cluster
+4. **Static Pods for System Components**:
+   - CNI plugins (Canal/Calico)
+   - CoreDNS
+   - Metrics-server
+   - Located in `/var/lib/rancher/rke2/agent/pod-manifests/`
 
-#### RKE1 cluster.yml Deep Dive (30 mins)
+### Installation & Configuration
 
-**Complete cluster.yml Anatomy:**
+**Installation (Server Node):**
+
+```bash
+# Install RKE2 server
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -
+
+# Enable and start service
+systemctl enable rke2-server.service
+systemctl start rke2-server.service
+
+# Check status
+systemctl status rke2-server.service
+
+# Watch logs
+journalctl -u rke2-server -f
+
+# Get node token for joining agents
+cat /var/lib/rancher/rke2/server/node-token
+```
+
+**Installation (Agent Node):**
+
+```bash
+# Install RKE2 agent
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent sh -
+
+# Configure agent
+mkdir -p /etc/rancher/rke2/
+cat <<EOF > /etc/rancher/rke2/config.yaml
+server: https://<server-ip>:9345
+token: <node-token-from-server>
+EOF
+
+# Enable and start
+systemctl enable rke2-agent.service
+systemctl start rke2-agent.service
+
+# Check status
+systemctl status rke2-agent.service
+journalctl -u rke2-agent -f
+```
+
+**Configuration File: /etc/rancher/rke2/config.yaml**
 
 ```yaml
-# Basic cluster identity
-cluster_name: production-cluster
+# Server configuration example
+# Location: /etc/rancher/rke2/config.yaml
 
-# Node definitions - SSH-based provisioning
-nodes:
-  - address: 10.0.1.10
-    user: ubuntu
-    role: [controlplane, etcd]
-    ssh_key_path: ~/.ssh/id_rsa
-    port: 22
-    labels:
-      node-role: control
-    taints:
-      - key: node-role
-        value: control
-        effect: NoSchedule
+# Cluster token (for HA)
+token: my-shared-secret
 
-  - address: 10.0.1.11
-    user: ubuntu
-    role: [worker]
-    ssh_key_path: ~/.ssh/id_rsa
-    labels:
-      node-role: worker
+# TLS SANs for API server
+tls-san:
+  - rancher.example.com
+  - 192.168.1.100
+  - loadbalancer.example.com
 
-  - address: 10.0.1.12
-    user: ubuntu
-    role: [worker]
-    ssh_key_path: ~/.ssh/id_rsa
+# Disable built-in components
+disable:
+  - rke2-ingress-nginx  # If using custom ingress
 
-# Kubernetes version
-kubernetes_version: v1.28.5-rancher1-1
+# CNI plugin (default: canal)
+cni:
+  - calico  # Options: canal, calico, cilium, none
 
-# Services configuration
-services:
-  # etcd service
-  etcd:
-    # Snapshot configuration
-    snapshot: true
-    creation: 6h
-    retention: 24h
-    # Backup to S3
-    backup_config:
-      enabled: true
-      interval_hours: 12
-      retention: 6
-      s3_backup_config:
-        access_key: ""
-        secret_key: ""
-        bucket_name: rke-etcd-backup
-        endpoint: s3.amazonaws.com
-        region: us-west-2
-    # etcd resource limits
-    extra_args:
-      election-timeout: "5000"
-      heartbeat-interval: "500"
-    # TLS cipher suites
-    extra_binds:
-      - "/var/lib/etcd:/var/lib/etcd"
+# Cluster CIDR
+cluster-cidr: 10.42.0.0/16
+service-cidr: 10.43.0.0/16
 
-  # kube-api configuration
-  kube-api:
-    service_cluster_ip_range: 10.43.0.0/16
-    service_node_port_range: 30000-32767
-    pod_security_policy: true
-    always_pull_images: false
-    # Audit log configuration
-    audit_log:
-      enabled: true
-      configuration:
-        max_age: 30
-        max_backup: 10
-        max_size: 100
-        path: /var/log/kube-audit/audit-log.json
-        format: json
-        policy:
-          apiVersion: audit.k8s.io/v1
-          kind: Policy
-          rules:
-            - level: Metadata
-    # API server flags
-    extra_args:
-      anonymous-auth: "false"
-      profiling: "false"
-      service-account-lookup: "true"
-      enable-admission-plugins: "NodeRestriction,PodSecurityPolicy"
-      encryption-provider-config: "/etc/kubernetes/encryption.yaml"
-    # Extra volumes for encryption config
-    extra_binds:
-      - "/opt/kubernetes/encryption.yaml:/etc/kubernetes/encryption.yaml"
+# DNS settings
+cluster-dns: 10.43.0.10
+cluster-domain: cluster.local
 
-  # kube-controller configuration
-  kube-controller:
-    cluster_cidr: 10.42.0.0/16
-    service_cluster_ip_range: 10.43.0.0/16
-    extra_args:
-      profiling: "false"
-      terminated-pod-gc-threshold: "1000"
-      feature-gates: "RotateKubeletServerCertificate=true"
+# Node labels
+node-label:
+  - "node-role=control"
+  - "environment=production"
 
-  # scheduler configuration
-  scheduler:
-    extra_args:
-      profiling: "false"
+# Node taints
+node-taint:
+  - "node-role.kubernetes.io/control-plane:NoSchedule"
 
-  # kubelet configuration
-  kubelet:
-    cluster_domain: cluster.local
-    cluster_dns_server: 10.43.0.10
-    fail_swap_on: false
-    generate_serving_certificate: true
-    extra_args:
-      max-pods: "110"
-      feature-gates: "RotateKubeletServerCertificate=true"
-      protect-kernel-defaults: "true"
-      tls-cipher-suites: "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+# etcd snapshot configuration
+etcd-snapshot-schedule-cron: "0 */12 * * *"  # Every 12 hours
+etcd-snapshot-retention: 5
+etcd-snapshot-dir: /var/lib/rancher/rke2/server/db/snapshots
 
-  # kubeproxy configuration
-  kubeproxy:
-    extra_args:
-      proxy-mode: "iptables"
+# etcd S3 backup
+etcd-s3: true
+etcd-s3-endpoint: s3.amazonaws.com
+etcd-s3-bucket: my-rke2-backups
+etcd-s3-region: us-west-2
+etcd-s3-access-key: <access-key>
+etcd-s3-secret-key: <secret-key>
 
-# Network plugin configuration
-network:
-  plugin: canal
-  options:
-    canal_flannel_backend_type: vxlan
-    canal_autoscaler_priority_class_name: system-cluster-critical
-    canal_priority_class_name: system-cluster-critical
+# Audit log
+audit-policy-file: /etc/rancher/rke2/audit-policy.yaml
 
-# Authentication
-authentication:
-  strategy: x509
-  sans:
-    - "rancher.example.com"
-    - "10.0.1.10"
-    - "10.0.1.11"
+# Private registry
+system-default-registry: registry.example.com
 
-# Authorization
-authorization:
-  mode: rbac
+# Additional API server arguments
+kube-apiserver-arg:
+  - "anonymous-auth=false"
+  - "profiling=false"
+  - "audit-log-maxage=30"
 
-# Addons (deployed after cluster up)
-addons: |-
-  ---
-  apiVersion: v1
-  kind: Namespace
-  metadata:
-    name: cattle-system
-  ---
-  apiVersion: v1
-  kind: ServiceAccount
-  metadata:
-    name: cattle
-    namespace: cattle-system
+# Additional controller manager arguments
+kube-controller-manager-arg:
+  - "terminated-pod-gc-threshold=1000"
 
-# System images (custom registry)
-system_images:
-  kubernetes: rancher/hyperkube:v1.28.5-rancher1
-  etcd: rancher/coreos-etcd:v3.5.9-rancher1
-  alpine: rancher/rke-tools:v0.1.90
-  nginx_proxy: rancher/rke-tools:v0.1.90
-
-# Private registry configuration
-private_registries:
-  - url: registry.example.com
-    user: admin
-    password: password
-    is_default: true
-
-# Ingress controller
-ingress:
-  provider: nginx
-  options:
-    use-forwarded-headers: "true"
-  node_selector:
-    node-role: worker
-  extra_args:
-    default-ssl-certificate: "ingress-nginx/tls-cert"
-
-# Cluster-level options
-# Enable monitoring
-monitoring:
-  provider: metrics-server
-
-# Restore from backup
-restore:
-  restore: false
-  snapshot_name: ""
-
-# Rotate certificates
-rotate_certificates:
-  ca_certificates: false
-  services:
-    - etcd
-    - kubelet
-    - kube-apiserver
-
-# Upgrade strategy
-upgrade_strategy:
-  max_unavailable_worker: "10%"
-  max_unavailable_controlplane: "1"
-  drain: true
-  drain_input:
-    delete_local_data: true
-    force: true
-    grace_period: 60
-    ignore_daemon_sets: true
-    timeout: 120
+# Additional kubelet arguments
+kubelet-arg:
+  - "max-pods=110"
+  - "eviction-hard=memory.available<500Mi"
 ```
 
-**Key Sections Explained:**
-
-1. **nodes**: SSH-based node inventory, RKE connects and provisions
-2. **services**: Fine-grained control plane component configuration
-3. **network**: CNI plugin selection and configuration
-4. **system_images**: Override default images (air-gap scenarios)
-5. **restore**: Disaster recovery from etcd snapshot
-6. **upgrade_strategy**: Controls rolling upgrade behavior
-
-**Questions to Answer:**
-
-1. Why separate controlplane, etcd, and worker roles?
-2. What's the minimum etcd cluster size for HA?
-3. How does RKE use SSH keys?
-4. What's the purpose of `sans` in authentication?
-5. How do you add a node after initial cluster creation?
-
-#### RKE CLI Commands - Hands-On (45 mins)
-
-**Installation and Setup:**
+**Important File Locations:**
 
 ```bash
-# Install RKE CLI
-curl -LO https://github.com/rancher/rke/releases/download/v1.5.5/rke_linux-amd64
-mv rke_linux-amd64 /usr/local/bin/rke
-chmod +x /usr/local/bin/rke
+# Configuration
+/etc/rancher/rke2/config.yaml              # Main config file
 
-# Verify installation
-rke --version
+# Binaries and data
+/var/lib/rancher/rke2/                     # RKE2 data directory
+/var/lib/rancher/rke2/server/              # Server-specific data
+/var/lib/rancher/rke2/server/tls/          # Certificates
+/var/lib/rancher/rke2/agent/               # Agent-specific data
+/var/lib/rancher/rke2/agent/containerd/    # containerd data
+/var/lib/rancher/rke2/server/db/           # etcd data
 
-# Generate cluster template
-rke config --name cluster.yml
+# Kubeconfig
+/etc/rancher/rke2/rke2.yaml                # Admin kubeconfig
 
-# Validate cluster configuration
-rke config validate --file cluster.yml
+# Static pod manifests
+/var/lib/rancher/rke2/agent/pod-manifests/ # System component manifests
+
+# Logs
+journalctl -u rke2-server                   # Server logs
+journalctl -u rke2-agent                    # Agent logs
+
+# CNI configuration
+/etc/cni/net.d/                            # CNI config
+/var/lib/rancher/rke2/agent/etc/cni/net.d/ # RKE2-managed CNI config
 ```
 
-**Cluster Provisioning:**
+### systemd Service Model
+
+**Understanding rke2-server.service:**
 
 ```bash
-# Initial cluster creation
-rke up --config cluster.yml
+# View service definition
+systemctl cat rke2-server.service
 
-# What happens during 'rke up':
-# 1. SSH to each node
-# 2. Install Docker (if not present)
-# 3. Pull system images
-# 4. Start etcd containers on etcd nodes
-# 5. Start control plane components
-# 6. Generate kubeconfig
-# 7. Deploy network plugin
-# 8. Deploy DNS
-# 9. Deploy ingress controller
-# 10. Mark cluster as ready
+# Key directives:
+# - Type=notify: Service signals systemd when ready
+# - KillMode=process: Only kill main process on stop
+# - Delegate=yes: Allow systemd to manage cgroups
 
-# Output files created:
-# - kube_config_cluster.yml (kubectl config)
-# - cluster.rkestate (cluster state, CRITICAL - backup this!)
+# Service control
+systemctl start rke2-server     # Start server
+systemctl stop rke2-server      # Stop (drains node gracefully)
+systemctl restart rke2-server   # Restart
+systemctl status rke2-server    # Check status
 
-# Use the cluster
-export KUBECONFIG=$PWD/kube_config_cluster.yml
-kubectl get nodes
+# Enable/disable auto-start
+systemctl enable rke2-server    # Start on boot
+systemctl disable rke2-server   # Don't start on boot
 ```
 
-**Cluster Operations:**
+**Service Lifecycle:**
 
-```bash
-# Update cluster (apply config changes)
-rke up --config cluster.yml --update-only
-
-# Upgrade Kubernetes version
-# Edit cluster.yml: kubernetes_version: v1.29.0-rancher1-1
-rke up --config cluster.yml
-
-# Add a node
-# Edit cluster.yml: add new node entry
-rke up --config cluster.yml
-# RKE detects new node and provisions it
-
-# Remove a node
-# Edit cluster.yml: remove node entry
-rke remove --config cluster.yml --force
-# Then run rke up
-
-# Check cluster health
-rke util get-state-file --config cluster.yml
-
-# View running containers on a node (SSH to node)
-docker ps --filter name=kube --format "table {{.Names}}\t{{.Status}}"
-
-# View logs from control plane component
-docker logs kube-apiserver
-docker logs kube-controller-manager
-docker logs kube-scheduler
-docker logs etcd
+```
+systemctl start rke2-server
+         ↓
+1. systemd starts /usr/local/bin/rke2 server
+         ↓
+2. rke2 initializes embedded etcd (if first server)
+         ↓
+3. Generates certificates (if needed)
+         ↓
+4. Starts API server, scheduler, controller-manager (embedded)
+         ↓
+5. Starts kubelet (registers node)
+         ↓
+6. Deploys static pod manifests (CoreDNS, CNI)
+         ↓
+7. Sends READY signal to systemd
+         ↓
+8. Service marked as active (running)
 ```
 
-**etcd Backup and Restore:**
+**Troubleshooting systemd Integration:**
 
 ```bash
-# Manual etcd snapshot
-rke etcd snapshot-save \
-  --config cluster.yml \
-  --name manual-backup-$(date +%Y%m%d-%H%M%S)
+# Service won't start
+systemctl status rke2-server -l           # Full status with recent logs
+journalctl -u rke2-server --since "10 minutes ago"
 
-# List snapshots
-rke etcd snapshot-list --config cluster.yml
+# Common issues:
+# 1. Port 6443 already in use
+netstat -tlnp | grep 6443
 
-# Restore from snapshot
-# CRITICAL: This is destructive, cluster will be recreated
-rke etcd snapshot-restore \
-  --config cluster.yml \
-  --name manual-backup-20240215-120000
+# 2. etcd data corruption
+# Check: journalctl -u rke2-server | grep etcd
+# Fix: Remove /var/lib/rancher/rke2/server/db/ and restore from backup
 
-# Restore process:
-# 1. Stops all cluster components
-# 2. Restores etcd data from snapshot
-# 3. Restarts etcd cluster
-# 4. Restarts control plane
-# 5. Cluster recovers with data from snapshot time
+# 3. Certificate issues
+# Check: journalctl -u rke2-server | grep certificate
+# Fix: Remove /var/lib/rancher/rke2/server/tls/ and restart
 
-# Download snapshot from S3 (if configured)
-# Snapshots are in /opt/rke/etcd-snapshots/ on etcd nodes
-ssh ubuntu@10.0.1.10 "ls -la /opt/rke/etcd-snapshots/"
+# Service stops unexpectedly
+journalctl -u rke2-server -n 100          # Last 100 log lines
+systemctl show rke2-server | grep Result  # Exit reason
+
+# Resource limits
+systemctl show rke2-server | grep -E "(LimitNOFILE|LimitNPROC|LimitMEMLOCK)"
 ```
 
-**Certificate Management:**
+**HA Cluster Setup:**
 
 ```bash
-# Rotate all certificates (before expiry)
-rke cert rotate --config cluster.yml
+# First server (initializes etcd cluster)
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -
+systemctl enable --now rke2-server
 
-# Rotate specific service certificates
-rke cert rotate --config cluster.yml \
-  --service kubelet \
-  --service kube-apiserver
+# Get token
+cat /var/lib/rancher/rke2/server/node-token
+# Save output: K10abc123def456...
 
-# Rotate CA certificates (MAJOR operation)
-# This requires cluster recreation
-rke cert rotate --config cluster.yml --rotate-ca
-
-# Check certificate expiry
-# On control plane node
-docker exec kube-apiserver \
-  openssl x509 -in /etc/kubernetes/ssl/kube-apiserver.pem -noout -dates
-```
-
-**Troubleshooting Commands:**
-
-```bash
-# Remove cluster (cleanup)
-rke remove --config cluster.yml --force
-# This stops all containers and removes cluster state
-
-# Check RKE state file
-cat cluster.rkestate | jq .
-
-# Verify node connectivity
-rke util ping --config cluster.yml
-
-# Get cluster certificates info
-rke cert list --config cluster.yml
-
-# Validate Docker installation on nodes
-# RKE requires specific Docker versions
-docker version
-# Should be Docker CE 19.03.x or 20.10.x
-
-# Check RKE system containers on a node
-ssh ubuntu@10.0.1.10 '
-  docker ps --filter name=kube --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
-'
-
-# View etcd member list
-ssh ubuntu@10.0.1.10 '
-  docker exec etcd etcdctl \
-    --cacert=/etc/kubernetes/ssl/kube-ca.pem \
-    --cert=/etc/kubernetes/ssl/kube-etcd-*.pem \
-    --key=/etc/kubernetes/ssl/kube-etcd-*-key.pem \
-    --endpoints=https://127.0.0.1:2379 \
-    member list -w table
-'
-```
-
-**Advanced Operations:**
-
-```bash
-# Upgrade strategy testing
-# Dry run upgrade (see what would change)
-rke up --config cluster.yml --update-only --dry-run
-
-# Upgrade with custom drain settings
-# Edit cluster.yml upgrade_strategy section
-rke up --config cluster.yml
-
-# Air-gap installation (offline)
-# 1. Save required images to tarball
-rke config --system-images | grep -v '^INFO' > system-images.txt
-while read image; do
-  docker pull $image
-  docker save $image -o $(echo $image | tr '/:' '_').tar
-done < system-images.txt
-
-# 2. Load images on air-gap nodes
-# 3. Configure private_registries in cluster.yml
-# 4. Run rke up
-
-# Customize addon deployments
-# Use addons section in cluster.yml for day-1 configs
-# Or use addons_include to reference external files
-cat >> cluster.yml << 'EOF'
-addons_include:
-  - https://raw.githubusercontent.com/example/monitoring.yaml
-  - /path/to/local/addon.yaml
+# Second server (joins etcd cluster)
+mkdir -p /etc/rancher/rke2
+cat <<EOF > /etc/rancher/rke2/config.yaml
+server: https://<first-server-ip>:9345
+token: K10abc123def456...
+tls-san:
+  - loadbalancer.example.com
+  - 192.168.1.100
 EOF
 
-# Enable cluster monitoring
-# Edit cluster.yml
-monitoring:
-  provider: metrics-server
-  options:
-    nodeSelector:
-      node-role: controlplane
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -
+systemctl enable --now rke2-server
 
-# Test node drain during upgrade
-kubectl drain node-1 \
-  --ignore-daemonsets \
-  --delete-emptydir-data \
-  --grace-period=60
-# This is what RKE does during upgrades
+# Third server (completes 3-node etcd cluster)
+# Same as second server, use first-server-ip or loadbalancer
+
+# Verify cluster
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+kubectl get nodes
+kubectl get endpoints -n kube-system
+
+# Check etcd members
+/var/lib/rancher/rke2/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt \
+  --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt \
+  --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key \
+  member list
 ```
 
-#### RKE vs Other Distributions (30 mins)
+**Knowledge Check:**
 
-**Comparison Matrix:**
-
-| Feature | RKE1 | RKE2 | kubeadm | GKE | EKS |
-|---------|------|------|---------|-----|-----|
-| **Deployment** | SSH-based | Binary install | Binary install | Managed | Managed |
-| **Control Plane** | User-managed | User-managed | User-managed | Google-managed | AWS-managed |
-| **Node OS** | Any Linux | Any Linux | Any Linux | COS/Ubuntu | Amazon Linux |
-| **Networking** | Canal/Calico/Flannel | Canal/Calico/Cilium | Manual | GKE-native | VPC-CNI |
-| **Storage** | Manual | Longhorn option | Manual | GCE PD | EBS CSI |
-| **Upgrades** | rke up | systemd upgrade | kubeadm upgrade | Auto/Manual | Auto/Manual |
-| **HA etcd** | Manual setup | Built-in | Manual setup | Managed | Managed |
-| **CIS Compliance** | Manual | Default | Manual | Partial | Partial |
-| **Air-gap Support** | Yes | Yes | Yes | No | No |
-| **Cost** | Free | Free | Free | Paid | Paid |
-
-**When to Use Each:**
-
-1. **RKE1**:
-   - Legacy environments
-   - Simple deployments
-   - Migrating to RKE2
-
-2. **RKE2**:
-   - Production workloads
-   - Compliance requirements (CIS, FIPS)
-   - Edge/air-gap deployments
-   - Government/regulated industries
-
-3. **kubeadm**:
-   - Learning Kubernetes
-   - Custom distributions
-   - Full control over every component
-
-4. **GKE/EKS**:
-   - Cloud-native workloads
-   - Don't want to manage control plane
-   - Need cloud integration (IAM, LB, etc)
-
-**Key Differences:**
-
-```bash
-# RKE1: Components in Docker
-ssh node-1 'docker ps | grep kube-apiserver'
-
-# RKE2: Components as systemd service
-ssh node-1 'systemctl status rke2-server'
-ssh node-1 'crictl ps | grep kube-apiserver'
-
-# kubeadm: Components as static pods
-ssh node-1 'crictl ps | grep kube-apiserver'
-ls /etc/kubernetes/manifests/
-
-# GKE/EKS: Control plane not accessible
-# You only interact via kubectl
-```
-
-**Migration Paths:**
-
-```bash
-# RKE1 to RKE2 migration (no in-place upgrade)
-# 1. Backup RKE1 cluster (etcd + workloads)
-# 2. Provision new RKE2 cluster
-# 3. Migrate workloads
-# 4. Switch traffic to RKE2
-# 5. Decommission RKE1
-
-# Example backup script
-#!/bin/bash
-# Backup RKE1 cluster
-rke etcd snapshot-save --config cluster.yml --name pre-migration
-kubectl get all --all-namespaces -o yaml > all-resources.yaml
-kubectl get pv -o yaml > persistent-volumes.yaml
-kubectl get secrets --all-namespaces -o yaml > secrets.yaml
-```
-
-#### Knowledge Checklist
-
-- [ ] **RKE1 Architecture**: Can you diagram where each component runs?
-- [ ] **cluster.yml**: Explain each major section and when you'd customize it
-- [ ] **RKE CLI**: What's the difference between `rke up` and `rke up --update-only`?
-- [ ] **etcd Backup**: How do you take a backup? How do you restore?
-- [ ] **Certificate Rotation**: When would you rotate certs? What's the process?
-- [ ] **Node Operations**: How do you add/remove nodes safely?
-- [ ] **Upgrade Strategy**: What does `max_unavailable_worker: "10%"` mean?
-- [ ] **RKE2 Benefits**: Why migrate from RKE1 to RKE2?
-- [ ] **Troubleshooting**: What do you check if `rke up` fails halfway?
-
-#### Interview Questions to Practice
-
-**Q: Walk me through the RKE1 cluster provisioning process.**
-
-Answer:
-1. Create cluster.yml with node inventory and configuration
-2. RKE connects to each node via SSH using provided keys
-3. Validates Docker installation and version
-4. Pulls required system images (etcd, hyperkube, etc)
-5. Deploys etcd containers on etcd role nodes
-6. Deploys control plane components (API server, scheduler, controller)
-7. Generates kubeconfig and certificates
-8. Deploys network plugin (Canal/Calico)
-9. Deploys kube-dns/CoreDNS
-10. Deploys ingress controller if configured
-11. Saves cluster state to cluster.rkestate file
-12. Outputs kube_config_cluster.yml for kubectl access
-
-**Q: How do you perform a zero-downtime Kubernetes upgrade in RKE?**
-
-Answer:
-1. Edit cluster.yml to update kubernetes_version
-2. Configure upgrade_strategy in cluster.yml:
-   ```yaml
-   upgrade_strategy:
-     max_unavailable_worker: "10%"
-     max_unavailable_controlplane: "1"
-     drain: true
-     drain_input:
-       grace_period: 60
-       ignore_daemon_sets: true
-   ```
-3. Run `rke up --config cluster.yml`
-4. RKE upgrades control plane nodes one at a time
-5. Then upgrades worker nodes in batches (10% at a time)
-6. For each node: drain pods, upgrade components, uncordon
-7. Verify cluster health between each node
-8. Total cluster stays operational throughout
-
-**Q: How do you recover from a complete cluster failure?**
-
-Answer:
-1. Identify the most recent etcd snapshot
-2. Ensure you have cluster.yml and cluster.rkestate files
-3. If nodes are lost, provision new nodes matching cluster.yml
-4. Run `rke etcd snapshot-restore --config cluster.yml --name <snapshot>`
-5. RKE will:
-   - Stop all cluster services
-   - Restore etcd data directory from snapshot
-   - Restart cluster with restored state
-6. Verify cluster comes up: `kubectl get nodes`
-7. Check workload status: `kubectl get pods -A`
-8. Cluster should match state from snapshot time
-
-**Q: What's the difference between RKE1 and RKE2, and when would you choose each?**
-
-Answer:
-
-RKE1:
-- Docker-based, components in containers
-- Simpler, easier to understand
-- Good for dev/test or legacy migrations
-- Manual CIS hardening required
-- SSH-based provisioning
-
-RKE2:
-- containerd-native, systemd services
-- CIS 1.6 compliant by default
-- Better for production and compliance
-- FIPS 140-2 validated crypto
-- More secure default configuration
-
-Choose RKE2 for:
-- Production workloads
-- Compliance requirements (CIS, FIPS, NIST)
-- Government/regulated industries
-- Edge deployments
-- New greenfield clusters
-
-Choose RKE1 for:
-- Legacy environments already on RKE1
-- Simpler understanding needed
-- Temporary/dev clusters
-- Migration path to RKE2
+1. What happens if rke2-server is stopped on a 3-node control plane?
+2. Where is etcd data stored in RKE2?
+3. How do you change the CNI plugin after installation?
+4. What's the difference between `rke2 server` and `rke2 agent`?
+5. How do you add a new server to an existing HA cluster?
 
 ---
 
-### KUBERNETES INTERNALS - 3 hours
+## Kubernetes Control Plane Internals
 
-#### API Server Architecture (45 mins)
+**Time: 2 hours**
 
-**Request Flow Through API Server:**
+### API Server Deep Dive
+
+The API server is the **central hub** of Kubernetes. All components communicate through it, and it's the only component that talks to etcd.
+
+**API Server Responsibilities:**
+
+1. **RESTful API** - HTTP/JSON interface for all cluster operations
+2. **Authentication** - Verify user/service identity
+3. **Authorization** - Check permissions (RBAC)
+4. **Admission Control** - Validate/mutate requests
+5. **Schema Validation** - Ensure objects match API specs
+6. **etcd Interaction** - Persist cluster state
+7. **Watch Mechanism** - Notify clients of changes
+
+**API Server Architecture:**
 
 ```
-Client (kubectl)
-       │
-       ▼
-[Authentication]
-   │   └─> X.509 Client Certs
-   │   └─> Bearer Tokens
-   │   └─> Service Account Tokens
-   │   └─> Bootstrap Tokens
-   │
-   ▼
-[Authorization]
-   │   └─> RBAC (Role-Based Access Control)
-   │   └─> ABAC (Attribute-Based Access Control)
-   │   └─> Node Authorization
-   │   └─> Webhook
-   │
-   ▼
-[Admission Controllers]
-   │   └─> Mutating Webhooks (modify request)
-   │   └─> Validating Webhooks (accept/reject)
-   │   └─> Built-in: LimitRanger, ResourceQuota, PodSecurity
-   │
-   ▼
-[Schema Validation]
-   │   └─> OpenAPI schema check
-   │
-   ▼
-[etcd Write]
-   │   └─> Store to etcd
-   │
-   ▼
-[Watchers Notified]
-   │   └─> Controller Manager
-   │   └─> Scheduler
-   │   └─> kubelet
-   └─> Response to Client
+┌─────────────────────────────────────────────────────────────┐
+│                      API Server                             │
+│                                                             │
+│  HTTP Request (kubectl, kubelet, controllers)               │
+│         ↓                                                   │
+│  ┌────────────────────┐                                     │
+│  │  Authentication    │  (Who are you?)                     │
+│  │  - X.509 certs     │                                     │
+│  │  - Service accounts│                                     │
+│  │  - OIDC tokens     │                                     │
+│  └─────────┬──────────┘                                     │
+│            ↓                                                │
+│  ┌────────────────────┐                                     │
+│  │  Authorization     │  (What can you do?)                 │
+│  │  - RBAC            │                                     │
+│  │  - Node            │                                     │
+│  │  - Webhook         │                                     │
+│  └─────────┬──────────┘                                     │
+│            ↓                                                │
+│  ┌────────────────────────────────┐                         │
+│  │  Admission Controllers         │  (Is it valid/safe?)    │
+│  │  - Mutating (modify request)   │                         │
+│  │  - Validating (accept/reject)  │                         │
+│  └─────────┬──────────────────────┘                         │
+│            ↓                                                │
+│  ┌────────────────────┐                                     │
+│  │  Schema Validation │  (Matches API spec?)                │
+│  └─────────┬──────────┘                                     │
+│            ↓                                                │
+│  ┌────────────────────┐                                     │
+│  │  Write to etcd     │                                     │
+│  └─────────┬──────────┘                                     │
+│            ↓                                                │
+│  ┌────────────────────┐                                     │
+│  │  Notify Watchers   │  (Inform controllers/kubelet)       │
+│  └────────────────────┘                                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Hands-On Exploration:**
+**Key Admission Controllers:**
 
 ```bash
-# View API server configuration
-# On RKE1 node
-docker inspect kube-apiserver | jq '.[0].Args'
+# List enabled admission controllers (RKE2)
+kubectl exec -n kube-system <api-server-pod> -- \
+  kube-apiserver --help | grep enable-admission-plugins
 
-# On RKE2/kubeadm node
+# Common admission controllers:
+# - NamespaceLifecycle: Prevents operations in terminating namespaces
+# - LimitRanger: Enforces resource limits
+# - ServiceAccount: Automates service account management
+# - ResourceQuota: Enforces namespace quotas
+# - PodSecurityPolicy/PodSecurity: Enforces security policies
+# - MutatingAdmissionWebhook: Custom mutation logic
+# - ValidatingAdmissionWebhook: Custom validation logic
+# - NodeRestriction: Limits what kubelets can modify
+```
+
+**API Server in RKE2:**
+
+```bash
+# API server runs as part of rke2-server process
+# Check API server process
 ps aux | grep kube-apiserver
 
-# Check API server flags
-kubectl -n kube-system get pod kube-apiserver-node1 -o yaml | grep -A100 command:
+# API server arguments configured in config.yaml
+# /etc/rancher/rke2/config.yaml:
+# kube-apiserver-arg:
+#   - "audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log"
+#   - "audit-log-maxage=30"
 
-# Test API server directly (bypass kubectl)
-APISERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
-TOKEN=$(kubectl get secret -n kube-system \
-  $(kubectl get serviceaccount default -n kube-system -o jsonpath='{.secrets[0].name}') \
-  -o jsonpath='{.data.token}' | base64 -d)
+# Check API server health
+kubectl get --raw='/readyz?verbose'
+kubectl get --raw='/livez?verbose'
 
-curl -k -H "Authorization: Bearer $TOKEN" $APISERVER/api/v1/namespaces
+# API server metrics
+kubectl get --raw='/metrics' | grep apiserver
 
-# Enable API server audit logging
-# Check if enabled in cluster.yml (RKE1)
-grep -A10 audit_log cluster.yml
-
-# View audit logs
-# On control plane node
-tail -f /var/log/kube-audit/audit-log.json | jq .
-
-# See what API groups are available
-kubectl api-resources
-
-# See API versions
-kubectl api-versions
-
-# Explain how a resource reaches API server
-kubectl create deployment test --image=nginx --dry-run=client -o yaml
-# This shows the payload that would be sent to API server
+# Watch API server logs
+journalctl -u rke2-server | grep apiserver
 ```
 
-**Watch API in Action:**
+### Request Flow Through the System
+
+**Example: Creating a Deployment**
+
+```
+User runs: kubectl apply -f deployment.yaml
+
+Step-by-step flow:
+
+1. kubectl reads deployment.yaml
+   ↓
+2. kubectl sends POST request to API server
+   URL: /apis/apps/v1/namespaces/default/deployments
+   ↓
+3. API Server: Authentication
+   - Checks client certificate
+   - Validates user identity
+   ↓
+4. API Server: Authorization (RBAC)
+   - Checks if user can create deployments in namespace
+   - Queries RBAC rules
+   ↓
+5. API Server: Admission Control
+   - Mutating webhooks (e.g., inject sidecars)
+   - Validating webhooks (e.g., policy enforcement)
+   ↓
+6. API Server: Schema Validation
+   - Validates deployment spec against API schema
+   ↓
+7. API Server: Write to etcd
+   - Saves deployment object to etcd
+   - Returns HTTP 201 Created to kubectl
+   ↓
+8. API Server: Notify Watchers
+   - Deployment controller has a watch on deployments
+   - Controller receives notification
+   ↓
+9. Deployment Controller:
+   - Sees new deployment
+   - Calculates desired state (replicas)
+   - Creates ReplicaSet object via API server
+   ↓
+10. ReplicaSet Controller:
+    - Sees new ReplicaSet
+    - Creates Pod objects via API server
+    ↓
+11. Scheduler:
+    - Watches for unscheduled pods
+    - Finds suitable node
+    - Updates Pod.spec.nodeName via API server
+    ↓
+12. Kubelet (on assigned node):
+    - Watches for pods assigned to its node
+    - Sees new pod assignment
+    - Pulls container image
+    - Starts containers via containerd
+    - Updates Pod.status via API server
+    ↓
+13. Final State:
+    - Deployment → Running
+    - ReplicaSet → Desired replicas met
+    - Pods → Running on nodes
+```
+
+**Visualizing the Flow:**
+
+```
+ kubectl                API Server              etcd
+    │                       │                    │
+    │  POST /deployments    │                    │
+    ├──────────────────────>│                    │
+    │                       │                    │
+    │                       │  Write deployment  │
+    │                       ├───────────────────>│
+    │                       │                    │
+    │                       │  Ack               │
+    │  HTTP 201 Created     │<───────────────────┤
+    │<──────────────────────┤                    │
+    │                       │                    │
+                            │
+                     ┌──────┴──────┐
+                     ↓              ↓
+            Deployment Ctrl    Watch Stream
+                     │              │
+                     │  List/Watch  │
+                     ├─────────────>│
+                     │              │
+                     │  New Deploy  │
+                     │<─────────────┤
+                     │              │
+            Creates ReplicaSet      │
+                     │  POST /rs    │
+                     ├─────────────>│
+                     ...
+```
+
+**Component Communication Patterns:**
 
 ```bash
-# Open two terminals
+# Controllers use LIST + WATCH pattern
+# 1. LIST: Get current state of resources
+# 2. WATCH: Stream updates as they happen
 
-# Terminal 1: Watch API server logs
-# RKE1
-docker logs -f kube-apiserver 2>&1 | grep -i "pods"
+# Example: How deployment controller works
+# Pseudocode:
+deployments, err := client.List(context.Background(), &appsv1.DeploymentList{})
+watcher, err := client.Watch(context.Background(), &appsv1.DeploymentList{})
 
-# Terminal 2: Create a pod
-kubectl run test-pod --image=nginx
+for event := range watcher.ResultChan() {
+  switch event.Type {
+  case "ADDED":
+    // New deployment created
+    reconcile(event.Object)
+  case "MODIFIED":
+    // Deployment updated
+    reconcile(event.Object)
+  case "DELETED":
+    // Deployment deleted
+    cleanup(event.Object)
+  }
+}
 
-# Observe in Terminal 1:
-# 1. POST /api/v1/namespaces/default/pods
-# 2. Authentication check
-# 3. Authorization check
-# 4. Admission controller execution
-# 5. etcd write
-# 6. Response 201 Created
-
-# Watch changes with kubectl
-kubectl get pods -w
-# This uses the watch API: GET /api/v1/pods?watch=true
+# This pattern is used by ALL controllers
+# - Efficient (streams instead of polling)
+# - Resilient (can resume from resource version)
+# - Scalable (API server fans out to many watchers)
 ```
 
-**Key API Server Flags:**
+### etcd Operations
+
+**What is etcd?**
+
+- Distributed, consistent key-value store
+- Kubernetes' source of truth for cluster state
+- Uses Raft consensus algorithm
+- Requires odd number of members (3 or 5 for HA)
+
+**etcd in RKE2:**
 
 ```bash
-# Security-critical flags
---anonymous-auth=false                # Disable anonymous access
---authorization-mode=Node,RBAC        # Enable RBAC
---enable-admission-plugins=...        # Admission controllers
---encryption-provider-config=...      # Encrypt secrets at rest
---audit-log-path=...                  # Enable audit logging
---tls-cert-file=...                   # TLS certificate
---client-ca-file=...                  # Client cert verification
+# etcd runs embedded in rke2-server process
+# No separate container/process
 
-# Performance flags
---max-requests-inflight=400           # Concurrent requests
---max-mutating-requests-inflight=200  # Concurrent mutating requests
---watch-cache-sizes=...               # Watch cache per resource
+# etcd data location
+/var/lib/rancher/rke2/server/db/etcd/
 
-# etcd flags
---etcd-servers=https://...            # etcd endpoints
---etcd-cafile=...                     # etcd CA cert
---etcd-certfile=...                   # etcd client cert
+# etcd certificates
+/var/lib/rancher/rke2/server/tls/etcd/
 ```
 
-#### etcd Operations (45 mins)
-
-**etcd Architecture in Kubernetes:**
-
-```
-┌─────────────────────────────────────────┐
-│            API Server                   │
-│  (reads/writes through etcd client)     │
-└────────────────┬────────────────────────┘
-                 │
-      ┌──────────┴──────────┐
-      │                     │
-┌─────▼─────┐      ┌────────▼────┐
-│  etcd-1   │◄────►│   etcd-2    │
-│  (leader) │      │  (follower) │
-└─────┬─────┘      └────────┬────┘
-      │                     │
-      └──────────┬──────────┘
-                 │
-         ┌───────▼────────┐
-         │    etcd-3      │
-         │   (follower)   │
-         └────────────────┘
-
- Raft Consensus (quorum: 2 out of 3)
-```
-
-**Direct etcd Interaction:**
+**Using etcdctl:**
 
 ```bash
-# Set up etcdctl (on RKE1 etcd node)
-ETCDCTL_API=3
-ETCD_ENDPOINTS=https://127.0.0.1:2379
-ETCD_CACERT=/etc/kubernetes/ssl/kube-ca.pem
-ETCD_CERT=/etc/kubernetes/ssl/kube-etcd-*.pem
-ETCD_KEY=/etc/kubernetes/ssl/kube-etcd-*-key.pem
+# Set etcd alias for convenience
+alias etcdctl='/var/lib/rancher/rke2/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt \
+  --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt \
+  --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key'
 
-# Check etcd health
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint health
+# Check etcd cluster health
+etcdctl endpoint health --cluster
+etcdctl endpoint status --cluster -w table
 
-# Check etcd member list
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  member list -w table
+# List etcd members
+etcdctl member list -w table
 
-# Check etcd status
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint status -w table
+# View cluster member details
+etcdctl member list --write-out=json | jq
 
-# List all Kubernetes keys in etcd
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  get / --prefix --keys-only | head -20
+# Check etcd alarms (critical issues)
+etcdctl alarm list
 
-# Get a specific resource from etcd
-# Example: Get default namespace
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  get /registry/namespaces/default
-
-# Check etcd metrics
-curl -k --cert $ETCD_CERT --key $ETCD_KEY --cacert $ETCD_CACERT \
-  https://127.0.0.1:2379/metrics | grep etcd_server
-
-# Monitor etcd performance
-watch -n 1 'docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint status -w table'
+# Database size (important for performance)
+etcdctl endpoint status -w table | awk '{print $5}' | tail -n +2
 ```
 
-**etcd Backup and Restore:**
+**Understanding etcd Data Structure:**
 
 ```bash
-# Manual snapshot (RKE1)
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  snapshot save /backup/etcd-snapshot-$(date +%Y%m%d-%H%M%S).db
+# Kubernetes stores all objects in etcd under /registry/
 
-# Verify snapshot
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  snapshot status /backup/etcd-snapshot-20240215.db -w table
+# List all keys (WARNING: lots of output)
+etcdctl get / --prefix --keys-only
 
-# Automated backup (RKE handles this)
-# Check cluster.yml snapshot configuration
-services:
-  etcd:
-    snapshot: true
-    creation: 6h
-    retention: 24h
+# View specific resource types
+etcdctl get /registry/pods --prefix --keys-only
+etcdctl get /registry/deployments --prefix --keys-only
+etcdctl get /registry/configmaps --prefix --keys-only
 
-# Restore from snapshot (DANGEROUS)
-# This is handled by 'rke etcd snapshot-restore'
-# Manual restore process:
-# 1. Stop API server
-# 2. Stop etcd
-# 3. Remove old etcd data
-# 4. Restore snapshot to data directory
-# 5. Start etcd
-# 6. Start API server
+# Get a specific pod's data
+etcdctl get /registry/pods/default/nginx
 
-# Example manual restore (educational only)
-docker stop kube-apiserver
-docker stop etcd
-docker exec etcd etcdctl \
-  snapshot restore /backup/etcd-snapshot.db \
-  --name=etcd-1 \
-  --initial-cluster=etcd-1=https://10.0.1.10:2380 \
-  --initial-advertise-peer-urls=https://10.0.1.10:2380 \
-  --data-dir=/var/lib/etcd-restore
-# Then move restored data to /var/lib/etcd
-# Then restart etcd and API server
+# Count objects by type
+etcdctl get /registry/pods --prefix --keys-only | wc -l
+etcdctl get /registry/services --prefix --keys-only | wc -l
+
+# etcd key structure:
+# /registry/<resource-type>/<namespace>/<name>
+# /registry/pods/kube-system/coredns-abc123
+# /registry/deployments/default/nginx
+# /registry/secrets/kube-system/bootstrap-token-xyz
 ```
 
-**etcd Health Checks:**
+**etcd Performance Monitoring:**
 
 ```bash
-# Check if etcd is responding
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint health
+# Disk latency (critical metric)
+etcdctl check perf
 
-# Check etcd alarms (disk space, corruption)
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  alarm list
+# Watch metrics
+etcdctl endpoint status -w table --cluster
 
-# Check etcd database size
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint status -w table | grep "DB SIZE"
+# Key metrics:
+# - DB SIZE: Should be < 8GB (default limit)
+# - LEADER: Only one leader per cluster
+# - RAFT INDEX: Should be close across members
+# - RAFT APPLIED: Applied log entries
 
-# Defragment etcd (if database growing)
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  defrag
+# Performance issues often caused by:
+# 1. Slow disk (etcd is disk I/O bound)
+# 2. Large database size (too many objects/revisions)
+# 3. Network latency between etcd members
+# 4. CPU saturation
+```
 
-# Compact etcd history (reclaim space)
+**etcd Maintenance:**
+
+```bash
+# Compact old revisions (free space)
 # Get current revision
-REV=$(docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  endpoint status -w json | jq -r '.[0].Status.header.revision')
+REV=$(etcdctl endpoint status --write-out="json" | jq -r '.[0].Status.header.revision')
+echo "Current revision: $REV"
 
-# Compact up to current revision
-docker exec etcd etcdctl \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  --endpoints=$ETCD_ENDPOINTS \
-  compact $REV
+# Compact (remove history up to this revision)
+etcdctl compact $REV
+
+# Defragment (reclaim disk space)
+# MUST do on each member individually
+etcdctl defrag --cluster
+
+# Check space reclaimed
+etcdctl endpoint status -w table
+
+# Automate compaction (RKE2 does this automatically)
+# API server flag: --etcd-compaction-interval=5m (default)
 ```
 
-**etcd Troubleshooting Scenarios:**
+### Scheduler Internals
+
+**Scheduler Responsibility:**
+
+Assign pods to nodes based on:
+- Resource requirements (CPU, memory)
+- Affinity/anti-affinity rules
+- Taints and tolerations
+- Node selectors
+- Topology constraints
+
+**Scheduling Process:**
+
+```
+1. Watch for Unscheduled Pods
+   - Pods with spec.nodeName == ""
+   ↓
+2. Filtering (Predicates)
+   - Eliminate nodes that can't run the pod
+   - Checks:
+     • Sufficient resources (CPU/memory)?
+     • Node selector matches?
+     • Pod tolerates node taints?
+     • Volume zones match?
+     • Ports available?
+   ↓
+3. Scoring (Priorities)
+   - Rank remaining nodes (0-100 score)
+   - Factors:
+     • Resource balance (spread workloads)
+     • Affinity preferences
+     • Image locality (image already pulled?)
+     • Inter-pod affinity
+   ↓
+4. Binding
+   - Select highest-scoring node
+   - Create Binding object (sets pod.spec.nodeName)
+   - API server writes to etcd
+   ↓
+5. Kubelet Picks Up Pod
+   - Kubelet watches for pods on its node
+   - Starts containers
+```
+
+**Scheduler in RKE2:**
 
 ```bash
-# Scenario 1: etcd member not healthy
-# Check member status
-docker exec etcd etcdctl member list -w table
-# Look for "unhealthy" members
+# Scheduler runs as part of rke2-server
+# Check scheduler logs
+journalctl -u rke2-server | grep scheduler
 
-# Check network connectivity between members
-# On etcd-1, test connection to etcd-2
-curl -k --cert $ETCD_CERT --key $ETCD_KEY \
-  https://etcd-2:2379/health
+# Check scheduler health
+kubectl get --raw '/healthz/poststarthook/scheduler-scheduling'
 
-# Check etcd logs
-docker logs etcd --tail=100 | grep -i error
+# View scheduler events
+kubectl get events --all-namespaces | grep Scheduled
 
-# Scenario 2: etcd out of space
-# Check alarm
-docker exec etcd etcdctl alarm list
-# If "memberID:xxx alarm:NOSPACE"
-
-# Check disk space
-df -h /var/lib/etcd
-
-# Disarm alarm after freeing space
-docker exec etcd etcdctl alarm disarm
-
-# Scenario 3: etcd slow
-# Check etcd metrics for slow operations
-docker exec etcd etcdctl \
-  --endpoints=$ETCD_ENDPOINTS \
-  --cacert=$ETCD_CACERT \
-  --cert=$ETCD_CERT \
-  --key=$ETCD_KEY \
-  check perf
-
-# Look for disk latency issues
-# etcd is very sensitive to disk I/O
+# Scheduler metrics
+kubectl get --raw '/metrics' | grep scheduler
 ```
 
-#### Scheduler Internals (30 mins)
-
-**Scheduler Decision Process:**
-
-```
-New Pod Created (no node assigned)
-       │
-       ▼
-[Filtering Phase]
-   │   Checks:
-   │   - Node has enough CPU/memory?
-   │   - Pod tolerates node taints?
-   │   - Node selector matches?
-   │   - Ports available?
-   │   - Volume can be mounted?
-   │   - Pod affinity/anti-affinity satisfied?
-   │
-   ▼
-[Feasible Nodes: node-1, node-3, node-5]
-       │
-       ▼
-[Scoring Phase]
-   │   Scores each feasible node:
-   │   - LeastRequestedPriority (prefers less loaded)
-   │   - BalancedResourceAllocation (balance CPU/mem)
-   │   - NodeAffinityPriority (affinity preferences)
-   │   - ImageLocalityPriority (image already on node)
-   │   - TaintTolerationPriority
-   │
-   ▼
-[Highest Score: node-3 (score: 95)]
-       │
-       ▼
-[Binding Phase]
-   │   API Server: Bind pod to node-3
-   │   kubelet on node-3: Start pod
-   │
-   ▼
-[Pod Running on node-3]
-```
-
-**Hands-On Scheduler Exploration:**
+**Debugging Scheduling Failures:**
 
 ```bash
-# Watch scheduler make decisions
-kubectl -n kube-system logs -f kube-scheduler-node1 | grep -i "successfully assigned"
+# Pod stuck in Pending state
+kubectl get pods -A | grep Pending
 
-# Create pod and watch scheduling
-kubectl run test-sched --image=nginx
-kubectl get events --sort-by='.lastTimestamp' | grep test-sched
+# Describe pod to see scheduling events
+kubectl describe pod <pod-name>
 
-# Check why a pod is not scheduling
-kubectl describe pod test-sched | grep -A10 Events
+# Common issues:
+# - "Insufficient cpu/memory": Node doesn't have resources
+# - "node(s) had taint": Pod doesn't tolerate node taints
+# - "node(s) didn't match node selector": Label mismatch
+# - "pod has unbound immediate PersistentVolumeClaims": No PV available
 
-# View scheduler configuration
-kubectl -n kube-system get pod kube-scheduler-node1 -o yaml
-
-# Check scheduler leader election
-kubectl -n kube-system get lease kube-scheduler -o yaml
-# Shows which scheduler instance is leader (in HA control plane)
-
-# Simulate scheduler filtering
-# Create pod with impossible requirements
-kubectl run impossible --image=nginx \
-  --requests="cpu=1000,memory=1000Gi"
-
-kubectl get pods impossible
-# Status: Pending
-
-kubectl describe pod impossible
-# Events: "0/3 nodes available: insufficient cpu, insufficient memory"
+# Force pod to specific node (for testing)
+kubectl run test --image=nginx --overrides='
+{
+  "spec": {
+    "nodeName": "worker-1"
+  }
+}'
 ```
 
-**Custom Scheduling Scenarios:**
+**Advanced Scheduling:**
 
-```bash
-# Node selector scheduling
-kubectl run nginx-worker --image=nginx \
-  --overrides='{"spec":{"nodeSelector":{"node-role":"worker"}}}'
-
-# Verify placement
-kubectl get pod nginx-worker -o wide
-
-# Node affinity (preferred)
-cat <<EOF | kubectl apply -f -
+```yaml
+# Pod with complex scheduling requirements
 apiVersion: v1
 kind: Pod
 metadata:
-  name: nginx-affinity
+  name: complex-scheduling
 spec:
+  # Node selector: Hard requirement
+  nodeSelector:
+    disktype: ssd
+
+  # Affinity: Prefer certain nodes
   affinity:
+    # Node affinity
     nodeAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        preference:
-          matchExpressions:
-          - key: disk-type
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
             operator: In
             values:
-            - ssd
-  containers:
-  - name: nginx
-    image: nginx
-EOF
+            - worker-1
+            - worker-2
 
-# Pod affinity (schedule near other pods)
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nginx-near-redis
-spec:
-  affinity:
+    # Pod affinity: Co-locate with other pods
     podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - cache
+          topologyKey: kubernetes.io/hostname
+
+    # Pod anti-affinity: Spread across nodes
+    podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
       - labelSelector:
           matchExpressions:
           - key: app
             operator: In
             values:
-            - redis
+            - complex-scheduling
         topologyKey: kubernetes.io/hostname
-  containers:
-  - name: nginx
-    image: nginx
-EOF
 
-# Pod anti-affinity (spread pods across nodes)
-cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web-spread
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: web
-  template:
-    metadata:
-      labels:
-        app: web
-    spec:
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app: web
-            topologyKey: kubernetes.io/hostname
-      containers:
-      - name: nginx
-        image: nginx
-EOF
-
-# Verify spread across nodes
-kubectl get pods -l app=web -o wide
-
-# Taints and tolerations
-# Taint a node
-kubectl taint nodes node-1 dedicated=gpu:NoSchedule
-
-# Create pod that tolerates taint
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: gpu-pod
-spec:
+  # Tolerations: Allow scheduling on tainted nodes
   tolerations:
-  - key: dedicated
-    operator: Equal
-    value: gpu
-    effect: NoSchedule
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
   containers:
-  - name: nvidia
-    image: nvidia/cuda:11.0-base
-EOF
-
-# Remove taint
-kubectl taint nodes node-1 dedicated=gpu:NoSchedule-
+  - name: app
+    image: nginx
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
 ```
 
-#### Control Plane Components (30 mins)
+### Controller Manager
 
-**Controller Manager Internals:**
+**What is the Controller Manager?**
+
+A collection of controllers that watch cluster state and make changes to achieve desired state.
+
+**Core Controllers:**
+
+1. **Node Controller**: Monitors node health, evicts pods from unhealthy nodes
+2. **ReplicaSet Controller**: Maintains desired number of pod replicas
+3. **Deployment Controller**: Manages ReplicaSets for declarative updates
+4. **StatefulSet Controller**: Manages stateful applications with stable identities
+5. **DaemonSet Controller**: Ensures pods run on all (or selected) nodes
+6. **Job Controller**: Runs pods to completion
+7. **CronJob Controller**: Schedules jobs
+8. **Service Controller**: Creates cloud load balancers for LoadBalancer services
+9. **Namespace Controller**: Deletes resources when namespace is deleted
+10. **ServiceAccount Controller**: Creates default service accounts in namespaces
+11. **PersistentVolume Controller**: Binds PVs to PVCs
+
+**Controller Pattern (Reconciliation Loop):**
+
+```
+                ┌─────────────────┐
+                │  Watch Resources│
+                └────────┬────────┘
+                         ↓
+                ┌─────────────────┐
+                │ Get Current State│
+                └────────┬────────┘
+                         ↓
+                ┌─────────────────┐
+                │ Get Desired State│
+                └────────┬────────┘
+                         ↓
+                ┌─────────────────┐
+           ┌────┤ Compare States  │
+           │    └─────────────────┘
+           │            │
+    Match? │            │ Differ?
+           │            │
+           ↓            ↓
+    ┌──────────┐  ┌──────────────┐
+    │   Done   │  │ Take Action  │
+    └──────────┘  │ (Create/Update│
+                  │  /Delete)     │
+                  └───────┬───────┘
+                          │
+                          └──────> Loop back to Watch
+```
+
+**Example: Deployment Controller Logic**
+
+```
+Deployment created with replicas: 3
+
+Deployment Controller:
+  1. Watches Deployment objects
+  2. Sees new Deployment (desired: 3 replicas)
+  3. No ReplicaSet exists (current: 0)
+  4. Creates ReplicaSet with replicas: 3
+
+ReplicaSet Controller:
+  1. Watches ReplicaSet objects
+  2. Sees new ReplicaSet (desired: 3 replicas)
+  3. No Pods exist (current: 0)
+  4. Creates 3 Pods
+
+User updates Deployment to replicas: 5
+
+Deployment Controller:
+  1. Sees Deployment modified (desired: 5)
+  2. ReplicaSet exists with replicas: 3 (current: 3)
+  3. Updates ReplicaSet to replicas: 5
+
+ReplicaSet Controller:
+  1. Sees ReplicaSet modified (desired: 5)
+  2. Pods exist: 3 (current: 3)
+  3. Creates 2 more Pods
+
+Total: 5 pods running
+```
+
+**Controller Manager in RKE2:**
 
 ```bash
-# View running controllers
-kubectl -n kube-system logs kube-controller-manager-node1 | grep "Starting controller"
+# Controller manager runs as part of rke2-server
+# Check controller manager logs
+journalctl -u rke2-server | grep controller-manager
 
-# Key controllers:
-# - ReplicaSet controller: ensures desired replicas
-# - Deployment controller: manages ReplicaSets
-# - Job controller: creates pods for jobs
-# - CronJob controller: creates jobs on schedule
-# - Node controller: monitors node health
-# - Service controller: creates cloud load balancers
-# - Endpoint controller: populates endpoints
-# - PV controller: binds PVs to PVCs
-# - Namespace controller: cleans up deleted namespaces
+# Controller manager health
+kubectl get --raw '/healthz/poststarthook/controller-manager'
 
-# Watch ReplicaSet controller in action
-# Terminal 1
-kubectl scale deployment nginx --replicas=5
-kubectl get rs -w
+# View controller manager metrics
+kubectl get --raw '/metrics' | grep controller_manager
 
-# Terminal 2
-kubectl -n kube-system logs -f kube-controller-manager-node1 | grep replica
-
-# Test Node controller
-# Simulate node failure by stopping kubelet
-# On a worker node
-systemctl stop kubelet
-
-# Watch from control plane
-kubectl get nodes -w
-# After ~40 seconds: NotReady
-# After ~5 minutes: Pods evicted
-
-# Restart kubelet
-systemctl start kubelet
-
-# Watch node rejoin
-kubectl get nodes -w
+# Common controller manager flags (RKE2 config.yaml)
+# kube-controller-manager-arg:
+#   - "node-monitor-period=5s"           # How often to check node health
+#   - "node-monitor-grace-period=40s"     # Grace before marking NotReady
+#   - "pod-eviction-timeout=5m"          # Time before evicting pods
+#   - "terminated-pod-gc-threshold=12500" # Clean up terminated pods
 ```
 
-**Kubelet Deep Dive:**
+**Understanding Controller Behavior:**
 
 ```bash
-# View kubelet configuration
-# On worker node
-systemctl status kubelet
-ps aux | grep kubelet
+# Watch what controllers are doing
+kubectl get events --watch --all-namespaces
 
-# Check kubelet config file
-cat /var/lib/kubelet/config.yaml
+# See specific controller actions
+kubectl get events -A | grep ReplicaSet
+kubectl get events -A | grep Deployment
+kubectl get events -A | grep Node
 
-# Kubelet API (runs on each node)
-# From control plane or node itself
-curl -k https://localhost:10250/pods | jq .
-
-# Requires authentication
-# Get node kubelet client cert
-kubectl get csr
-
-# Check kubelet logs
-journalctl -u kubelet -f
-
-# Kubelet responsibilities:
-# 1. Pod lifecycle management
-# 2. Container runtime interaction (containerd/docker)
-# 3. Volume mounting
-# 4. Resource reporting
-# 5. Health checking (probes)
-# 6. cAdvisor integration (metrics)
-
-# Watch kubelet create a pod
-# Terminal 1: Watch kubelet logs
-journalctl -u kubelet -f
-
-# Terminal 2: Create pod on this node
-kubectl run test --image=nginx \
-  --overrides='{"spec":{"nodeName":"node-1"}}'
-
-# Observe in Terminal 1:
-# - Pull image
-# - Create container
-# - Start container
-# - Report status to API server
+# Example events:
+# - "Scaled up replica set nginx-xxx to 3"
+# - "Created pod: nginx-xxx-abc"
+# - "Successfully assigned default/nginx-xxx-abc to worker-1"
+# - "Pulling image nginx:latest"
+# - "Started container nginx"
 ```
 
-**Container Runtime Interface (CRI):**
+**Knowledge Check:**
 
-```bash
-# RKE1 uses Docker
-# Check Docker
-docker ps --filter name=k8s
-
-# Each Kubernetes pod has:
-# 1. Pause container (holds network namespace)
-# 2. Application containers
-
-# RKE2/kubeadm use containerd
-# Use crictl to interact
-crictl ps
-crictl pods
-crictl images
-
-# Inspect a pod
-POD_ID=$(crictl pods --name nginx -q)
-crictl inspectp $POD_ID
-
-# Check pod network namespace
-CONTAINER_ID=$(crictl ps --pod $POD_ID -q | head -1)
-crictl inspect $CONTAINER_ID | jq '.info.pid'
-# Network namespace is shared among pod containers
-
-# View container logs
-crictl logs $CONTAINER_ID
-
-# Execute in container
-crictl exec -it $CONTAINER_ID /bin/sh
-```
-
-#### Knowledge Checklist
-
-- [ ] **API Server Flow**: Can you diagram the authentication -> authorization -> admission flow?
-- [ ] **etcd Quorum**: How many etcd nodes do you need? What happens if you lose quorum?
-- [ ] **etcd Backup**: How do you take a backup? How long does restore take?
-- [ ] **Scheduler Filtering**: Name 5 filtering predicates the scheduler uses
-- [ ] **Scheduler Scoring**: What factors influence node score?
-- [ ] **Node Affinity**: Difference between required vs preferred?
-- [ ] **Controllers**: Name 5 controllers in controller-manager and their purpose
-- [ ] **Kubelet**: What happens if kubelet crashes? What about pods?
-- [ ] **CRI**: Difference between Docker and containerd in Kubernetes?
-
-#### Interview Questions to Practice
-
-**Q: Explain how a kubectl create deployment command becomes running pods.**
-
-Answer:
-1. kubectl sends POST to API server /apis/apps/v1/deployments
-2. API server: authentication (client cert), authorization (RBAC), admission (validation)
-3. API server writes Deployment object to etcd
-4. Deployment controller (in controller-manager) watches Deployments
-5. Controller creates ReplicaSet object via API server
-6. ReplicaSet controller watches ReplicaSets
-7. Controller creates Pod objects (3 if replicas=3)
-8. Scheduler watches unscheduled Pods
-9. Scheduler assigns each Pod to a node, updates Pod.spec.nodeName
-10. kubelet on assigned node watches Pods for its node
-11. kubelet pulls image, creates containers via CRI
-12. kubelet reports Pod status back to API server
-13. Pod enters Running state
-
-**Q: An etcd node fails in a 3-node cluster. What happens?**
-
-Answer:
-- 3-node etcd cluster has quorum of 2
-- Losing 1 node: cluster still has quorum (2/3)
-- Cluster continues operating normally
-- Writes still succeed (replicated to 2 nodes)
-- Performance may degrade slightly
-- Should replace failed node ASAP:
-  - Remove old member: `etcdctl member remove`
-  - Add new member: `etcdctl member add`
-  - Start etcd on new node
-  - It will sync data from other members
-
-If you lose 2 nodes (only 1 remains):
-- Cluster loses quorum
-- Cluster becomes read-only
-- API server can read but not write
-- No new pods, updates, or deletes work
-- Must restore from backup or recover members
-
-**Q: Why is a pod stuck in Pending state?**
-
-Common causes:
-1. **Insufficient resources**: No node has enough CPU/memory
-   ```bash
-   kubectl describe pod <pod> | grep -i "insufficient"
-   ```
-
-2. **Node selector mismatch**: No nodes match selector
-   ```bash
-   kubectl describe pod <pod> | grep -i "node selector"
-   ```
-
-3. **Taints without tolerations**: All nodes tainted
-   ```bash
-   kubectl describe nodes | grep -i taint
-   ```
-
-4. **PVC not bound**: Pod waiting for volume
-   ```bash
-   kubectl get pvc
-   ```
-
-5. **Image pull issues**: Can't download image
-   ```bash
-   kubectl describe pod <pod> | grep -i "pull"
-   ```
-
-Diagnosis process:
-```bash
-kubectl describe pod <pod>
-kubectl get events --sort-by='.lastTimestamp'
-kubectl logs kube-scheduler -n kube-system
-```
+1. What happens when API server restarts in a 3-node control plane?
+2. If etcd is down, can you still read cluster state via kubectl?
+3. What's the difference between Deployment and ReplicaSet controllers?
+4. Why does scheduler only assign pods to nodes, not start them?
+5. What happens if a node becomes unreachable? (Trace through the components)
 
 ---
 
-### CRDs, CONTROLLERS & OPERATORS - 2 hours
+## CRDs & Controllers
 
-#### Custom Resource Definitions (45 mins)
+**Time: 1 hour**
 
-**What Are CRDs?**
+### Custom Resource Definitions
 
-CRDs extend Kubernetes API with custom resource types. Instead of just Pods, Services, Deployments, you can create `Backups`, `Databases`, `Applications`, etc.
+**What are CRDs?**
 
-**CRD Structure:**
+Custom Resource Definitions extend Kubernetes API with custom object types. They allow you to define your own resources (like Deployment, Pod, etc.) and store them in etcd.
+
+**Example: Creating a CRD**
 
 ```yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: databases.example.com
+  name: backups.stable.example.com
 spec:
-  group: example.com
-  versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                engine:
-                  type: string
-                  enum: [postgres, mysql]
-                version:
-                  type: string
-                replicas:
-                  type: integer
-                  minimum: 1
-                  maximum: 5
-                storage:
-                  type: string
-                  pattern: '^[0-9]+Gi$'
-              required:
-                - engine
-                - version
-            status:
-              type: object
-              properties:
-                phase:
-                  type: string
-                  enum: [Pending, Running, Failed]
-                endpoint:
-                  type: string
-  scope: Namespaced
-  names:
-    plural: databases
-    singular: database
-    kind: Database
-    shortNames:
-      - db
-```
-
-**Hands-On CRD Creation:**
-
-```bash
-# Create a simple CRD
-cat <<EOF | kubectl apply -f -
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: backups.example.com
-spec:
-  group: example.com
-  versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                source:
-                  type: string
-                schedule:
-                  type: string
-                retention:
-                  type: integer
-            status:
-              type: object
-              properties:
-                lastBackup:
-                  type: string
-                status:
-                  type: string
-  scope: Namespaced
+  group: stable.example.com
   names:
     plural: backups
     singular: backup
     kind: Backup
     shortNames:
-      - bkp
-EOF
+    - bk
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              schedule:
+                type: string
+                pattern: '^(\d+|\*)(/\d+)?(\s+(\d+|\*)(/\d+)?){4}$'
+              retention:
+                type: integer
+                minimum: 1
+                maximum: 365
+              target:
+                type: string
+            required:
+            - schedule
+            - target
+          status:
+            type: object
+            properties:
+              lastBackup:
+                type: string
+                format: date-time
+              state:
+                type: string
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+    additionalPrinterColumns:
+    - name: Schedule
+      type: string
+      jsonPath: .spec.schedule
+    - name: Target
+      type: string
+      jsonPath: .spec.target
+    - name: Last Backup
+      type: string
+      jsonPath: .status.lastBackup
+    - name: State
+      type: string
+      jsonPath: .status.state
+```
 
-# Verify CRD created
-kubectl get crd backups.example.com
-kubectl describe crd backups.example.com
+**Using the Custom Resource:**
 
-# CRD is now part of API
+```bash
+# Create CRD
+kubectl apply -f backup-crd.yaml
+
+# Verify CRD is registered
+kubectl get crd backups.stable.example.com
 kubectl api-resources | grep backup
 
-# Create a custom resource
+# Create a custom resource instance
 cat <<EOF | kubectl apply -f -
-apiVersion: example.com/v1
+apiVersion: stable.example.com/v1
 kind: Backup
 metadata:
-  name: daily-backup
+  name: database-backup
 spec:
-  source: postgresql-prod
-  schedule: "0 2 * * *"
-  retention: 30
+  schedule: "0 2 * * *"  # 2 AM daily
+  retention: 7
+  target: "postgresql://db.example.com"
 EOF
 
-# Query custom resources
+# List backups (just like any K8s resource)
 kubectl get backups
-kubectl get bkp  # short name works
-kubectl describe backup daily-backup
+kubectl get bk  # shortname
 
-# Get as YAML
-kubectl get backup daily-backup -o yaml
+# Describe backup
+kubectl describe backup database-backup
 
-# Note: CRD alone doesn't DO anything
-# You need a controller to watch and act on these resources
+# Watch backups
+kubectl get backups --watch
+
+# The CRD is just data at this point - no logic!
+# You need a controller to act on it
 ```
 
-**CRD with Validation:**
+### Controller Pattern
 
-```bash
-# Create CRD with comprehensive validation
-cat <<EOF | kubectl apply -f -
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: applications.platform.example.com
-spec:
-  group: platform.example.com
-  versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: ["spec"]
-          properties:
-            spec:
-              type: object
-              required: ["image", "replicas"]
-              properties:
-                image:
-                  type: string
-                  pattern: '^[a-z0-9./:-]+$'
-                replicas:
-                  type: integer
-                  minimum: 1
-                  maximum: 100
-                resources:
-                  type: object
-                  properties:
-                    cpu:
-                      type: string
-                      pattern: '^[0-9]+m?$'
-                    memory:
-                      type: string
-                      pattern: '^[0-9]+[MGT]i$'
-                env:
-                  type: array
-                  items:
-                    type: object
-                    required: ["name", "value"]
-                    properties:
-                      name:
-                        type: string
-                      value:
-                        type: string
-            status:
-              type: object
-              properties:
-                phase:
-                  type: string
-                  enum: [Pending, Running, Failed, Succeeded]
-                deploymentName:
-                  type: string
-                serviceName:
-                  type: string
-      additionalPrinterColumns:
-        - name: Phase
-          type: string
-          jsonPath: .status.phase
-        - name: Replicas
-          type: integer
-          jsonPath: .spec.replicas
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-  scope: Namespaced
-  names:
-    plural: applications
-    singular: application
-    kind: Application
-    shortNames:
-      - app
-EOF
+**What is a Controller?**
 
-# Test validation
-# This should succeed
-cat <<EOF | kubectl apply -f -
-apiVersion: platform.example.com/v1
-kind: Application
-metadata:
-  name: my-app
-spec:
-  image: nginx:1.21
-  replicas: 3
-  resources:
-    cpu: 500m
-    memory: 512Mi
-  env:
-    - name: ENV
-      value: production
-EOF
+A control loop that watches resources and takes action to reconcile current state with desired state.
 
-# This should fail (invalid replicas)
-cat <<EOF | kubectl apply -f -
-apiVersion: platform.example.com/v1
-kind: Application
-metadata:
-  name: bad-app
-spec:
-  image: nginx:1.21
-  replicas: 150  # exceeds maximum: 100
-EOF
-# Error: replicas in body should be less than or equal to 100
-
-# View custom columns
-kubectl get applications
-# Shows: NAME, PHASE, REPLICAS, AGE
-```
-
-**CRD Versioning:**
-
-```bash
-# CRD supporting multiple versions
-cat <<EOF | kubectl apply -f -
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: widgets.example.com
-spec:
-  group: example.com
-  versions:
-    - name: v1alpha1
-      served: true
-      storage: false  # Old version
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                size:
-                  type: string  # v1alpha1 uses string
-    - name: v1
-      served: true
-      storage: true  # Current version
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                replicas:
-                  type: integer  # v1 uses integer
-  conversion:
-    strategy: None  # Or Webhook for auto-conversion
-  scope: Namespaced
-  names:
-    plural: widgets
-    singular: widget
-    kind: Widget
-EOF
-
-# Create v1alpha1 resource
-kubectl apply -f - <<EOF
-apiVersion: example.com/v1alpha1
-kind: Widget
-metadata:
-  name: old-widget
-spec:
-  size: "3"
-EOF
-
-# Create v1 resource
-kubectl apply -f - <<EOF
-apiVersion: example.com/v1
-kind: Widget
-metadata:
-  name: new-widget
-spec:
-  replicas: 3
-EOF
-
-# Both versions work
-kubectl get widgets
-```
-
-#### Controller Pattern (45 mins)
-
-**Controller Reconciliation Loop:**
-
-```
-┌──────────────────────────────────────┐
-│     Watch API Server (Informer)      │
-│   for changes to watched resources   │
-└─────────────┬────────────────────────┘
-              │
-              ▼
-      ┌───────────────┐
-      │  Work Queue   │
-      │  (add event)  │
-      └───────┬───────┘
-              │
-              ▼
-    ┌─────────────────────┐
-    │  Reconcile Function │
-    │                     │
-    │  1. Get desired     │
-    │  2. Get actual      │
-    │  3. Compare         │
-    │  4. Take action     │
-    └─────────┬───────────┘
-              │
-              ▼
-       ┌──────────────┐
-       │  Update API  │
-       │  (if needed) │
-       └──────────────┘
-              │
-              └──────> Back to Watch
-```
-
-**Simple Controller Example (Pseudo-code):**
+**Controller Reconciliation:**
 
 ```go
-// This is conceptual - shows controller pattern
-package main
+// Simplified controller pseudocode
+func (c *BackupController) Run() {
+    // List all existing backups
+    backups := client.List(&BackupList{})
 
-import (
-    "context"
-    "fmt"
-    corev1 "k8s.io/api/core/v1"
-    "k8s.io/client-go/informers"
-    "k8s.io/client-go/kubernetes"
-    "k8s.io/client-go/tools/cache"
-)
+    // Watch for changes
+    watcher := client.Watch(&BackupList{})
 
-func main() {
-    // Create Kubernetes client
-    clientset := getKubernetesClient()
-
-    // Create informer factory
-    factory := informers.NewSharedInformerFactory(clientset, 0)
-
-    // Watch Backups (our CRD)
-    backupInformer := factory.Example().V1().Backups().Informer()
-
-    // Add event handlers
-    backupInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-        AddFunc: func(obj interface{}) {
-            backup := obj.(*Backup)
-            reconcile(backup)
-        },
-        UpdateFunc: func(oldObj, newObj interface{}) {
-            backup := newObj.(*Backup)
-            reconcile(backup)
-        },
-        DeleteFunc: func(obj interface{}) {
-            backup := obj.(*Backup)
-            cleanup(backup)
-        },
-    })
-
-    // Start informer
-    stopCh := make(chan struct{})
-    factory.Start(stopCh)
-
-    // Wait forever
-    <-stopCh
+    for {
+        select {
+        case event := <-watcher.ResultChan():
+            switch event.Type {
+            case "ADDED":
+                c.reconcile(event.Object)
+            case "MODIFIED":
+                c.reconcile(event.Object)
+            case "DELETED":
+                c.cleanup(event.Object)
+            }
+        }
+    }
 }
 
-func reconcile(backup *Backup) {
-    // Reconciliation logic
-    fmt.Printf("Reconciling backup: %s\n", backup.Name)
+func (c *BackupController) reconcile(backup *Backup) {
+    // 1. Check if backup job should run
+    if shouldRunNow(backup.Spec.Schedule) {
+        // 2. Create K8s Job to perform backup
+        job := createBackupJob(backup)
+        client.Create(job)
 
-    // 1. Get desired state from backup.Spec
-    desiredSchedule := backup.Spec.Schedule
-    desiredRetention := backup.Spec.Retention
-
-    // 2. Get actual state (check if CronJob exists)
-    cronJob := getCronJob(backup.Name)
-
-    // 3. Compare desired vs actual
-    if cronJob == nil {
-        // CronJob doesn't exist, create it
-        createCronJob(backup)
-    } else if cronJob.Spec.Schedule != desiredSchedule {
-        // CronJob exists but schedule differs, update it
-        updateCronJob(cronJob, backup)
+        // 3. Update status
+        backup.Status.State = "Running"
+        backup.Status.LastBackup = time.Now()
+        client.UpdateStatus(backup)
     }
 
-    // 4. Update status
-    backup.Status.LastReconcile = time.Now()
-    updateBackupStatus(backup)
-}
-
-func cleanup(backup *Backup) {
-    // Cleanup logic when Backup is deleted
-    deleteCronJob(backup.Name)
-    deleteBackupData(backup.Name)
+    // 4. Clean old backups based on retention
+    cleanOldBackups(backup.Spec.Retention)
 }
 ```
 
-**Real Controller Example - Deploy and Examine:**
+**Real-World Example: Longhorn Controller**
 
 ```bash
-# Let's examine an actual controller: Flux HelmRelease controller
+# Longhorn uses many CRDs and controllers
+kubectl get crd | grep longhorn
 
-# Check Flux helm-controller
-kubectl -n flux-system get deployment helm-controller
+# Example CRDs:
+# - volumes.longhorn.io
+# - replicas.longhorn.io
+# - engines.longhorn.io
+# - nodes.longhorn.io
 
-# View controller logs
-kubectl -n flux-system logs -f deployment/helm-controller
+# When you create a PVC with Longhorn StorageClass:
+# 1. PVC created → PV Controller binds it
+# 2. Longhorn Controller sees new PVC
+# 3. Creates Volume custom resource
+# 4. Volume Controller creates Replicas (for redundancy)
+# 5. Replica Controller starts replica pods on different nodes
+# 6. Engine Controller creates engine pod to serve I/O
+# 7. Volume attached to node and mounted in pod
 
-# Create a HelmRelease and watch controller react
+# Trace this flow:
+kubectl get pvc
+kubectl get pv
+kubectl get volumes.longhorn.io -n longhorn-system
+kubectl get replicas.longhorn.io -n longhorn-system
+kubectl get engines.longhorn.io -n longhorn-system
+```
+
+### Operator Pattern
+
+**What is an Operator?**
+
+An operator = CRD + Controller + operational knowledge
+
+It encodes domain-specific knowledge to manage complex applications (databases, monitoring, backups, etc.)
+
+**Popular Operators:**
+
+- Prometheus Operator (monitoring)
+- Cert-Manager (TLS certificates)
+- Longhorn (storage)
+- MySQL Operator (database management)
+- Velero (backup/restore)
+
+**Example: cert-manager Operator**
+
+```bash
+# cert-manager CRDs
+kubectl get crd | grep cert-manager
+# - certificates.cert-manager.io
+# - certificaterequests.cert-manager.io
+# - issuers.cert-manager.io
+# - clusterissuers.cert-manager.io
+
+# Create ClusterIssuer (tells cert-manager how to issue certs)
 cat <<EOF | kubectl apply -f -
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
 metadata:
-  name: test-release
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+EOF
+
+# Create Certificate (declarative cert request)
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-com-tls
   namespace: default
 spec:
-  interval: 5m
-  chart:
-    spec:
-      chart: nginx
-      sourceRef:
-        kind: HelmRepository
-        name: bitnami
-        namespace: flux-system
-      version: "18.x"
-  values:
-    replicaCount: 1
+  secretName: example-com-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - example.com
+  - www.example.com
 EOF
 
-# Watch controller logs
-# You'll see:
-# 1. Watch event: HelmRelease created
-# 2. Reconcile starts
-# 3. Check if HelmChart exists
-# 4. Check if Helm release exists
-# 5. Install Helm release
-# 6. Update HelmRelease status
-# 7. Schedule next reconciliation
+# What cert-manager does:
+# 1. Watches Certificate resources
+# 2. Sees new Certificate request
+# 3. Creates CertificateRequest
+# 4. Performs ACME challenge (HTTP-01 or DNS-01)
+# 5. Obtains certificate from Let's Encrypt
+# 6. Stores cert in Secret (example-com-tls)
+# 7. Updates Certificate status
+# 8. Watches expiry, renews automatically
 
-# Check HelmRelease status
-kubectl describe helmrelease test-release
+# Check certificate status
+kubectl get certificate
+kubectl describe certificate example-com-tls
 
-# Controller updates status regularly
-kubectl get helmrelease test-release -o yaml | grep -A10 status:
-
-# Clean up
-kubectl delete helmrelease test-release
+# View the created secret
+kubectl get secret example-com-tls
+kubectl describe secret example-com-tls
 ```
 
-**Writing a Simple Controller:**
+**Knowledge Check:**
 
-```bash
-# We'll use kubebuilder to scaffold a controller
-# Install kubebuilder
-curl -L -o kubebuilder https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)
-chmod +x kubebuilder
-mv kubebuilder /usr/local/bin/
-
-# Create controller project
-mkdir backup-controller
-cd backup-controller
-kubebuilder init --domain example.com --repo example.com/backup-controller
-
-# Create API and controller
-kubebuilder create api --group batch --version v1 --kind Backup
-
-# This generates:
-# - api/v1/backup_types.go (CRD definition)
-# - controllers/backup_controller.go (controller logic)
-
-# Edit api/v1/backup_types.go
-# Define BackupSpec and BackupStatus
-
-# Edit controllers/backup_controller.go
-# Implement Reconcile() function
-
-# Install CRD into cluster
-make install
-
-# Run controller locally
-make run
-
-# Build and deploy controller
-make docker-build docker-push IMG=example.com/backup-controller:v1
-make deploy IMG=example.com/backup-controller:v1
-```
-
-#### Operator Pattern (30 mins)
-
-**Operator = CRD + Controller + Domain Logic**
-
-Operators encode operational knowledge:
-- How to install software
-- How to upgrade
-- How to backup and restore
-- How to scale
-- How to heal failures
-
-**Famous Operators:**
-
-1. **Prometheus Operator**: Manages Prometheus, Alertmanager, ServiceMonitors
-2. **etcd Operator**: Manages etcd clusters
-3. **PostgreSQL Operator**: Manages PostgreSQL databases
-4. **Longhorn**: Manages distributed block storage
-
-**Installing an Operator:**
-
-```bash
-# Install Prometheus Operator (if not already installed)
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm install prometheus-operator prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --create-namespace
-
-# Check CRDs installed by operator
-kubectl get crd | grep monitoring.coreos.com
-# prometheus.monitoring.coreos.com
-# servicemonitor.monitoring.coreos.com
-# alertmanager.monitoring.coreos.com
-# prometheusrule.monitoring.coreos.com
-
-# Check operator pod
-kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus-operator
-
-# Create a ServiceMonitor (operator watches this)
-cat <<EOF | kubectl apply -f -
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: my-app-metrics
-  namespace: monitoring
-spec:
-  selector:
-    matchLabels:
-      app: my-app
-  endpoints:
-    - port: metrics
-      interval: 30s
-EOF
-
-# Operator detects ServiceMonitor and updates Prometheus config
-kubectl -n monitoring logs -f prometheus-operator-xxx | grep ServiceMonitor
-
-# Create PrometheusRule (alert rules)
-cat <<EOF | kubectl apply -f -
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: my-alerts
-  namespace: monitoring
-spec:
-  groups:
-    - name: my-app
-      interval: 30s
-      rules:
-        - alert: HighErrorRate
-          expr: rate(http_requests_total{status="500"}[5m]) > 0.05
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "High error rate detected"
-EOF
-
-# Operator updates Prometheus with new rules
-```
-
-**Operator Capability Levels:**
-
-```
-Level 5: Auto Pilot
-  └─> Full auto-healing, tuning, scaling
-
-Level 4: Deep Insights
-  └─> Metrics, alerts, log processing
-
-Level 3: Full Lifecycle
-  └─> Backup, restore, upgrade, scaling
-
-Level 2: Seamless Upgrades
-  └─> Version upgrades, patching
-
-Level 1: Basic Install
-  └─> Automated install and config
-```
-
-#### Knowledge Checklist
-
-- [ ] **CRD Structure**: Can you write a CRD with validation from scratch?
-- [ ] **CRD Versioning**: How do you add a new version while supporting old one?
-- [ ] **Controller Pattern**: Explain the watch -> reconcile -> update loop
-- [ ] **Reconciliation**: What's the difference between level-triggered vs edge-triggered?
-- [ ] **Operators**: Name 3 operators and what they manage
-- [ ] **Informers**: How do informers reduce API server load?
-- [ ] **Work Queues**: Why use a queue instead of processing events immediately?
-- [ ] **Status Updates**: Why separate spec from status in CRs?
-
-#### Interview Questions to Practice
-
-**Q: Design a CRD and controller for managing Redis clusters.**
-
-Answer:
-```yaml
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: redisclusters.cache.example.com
-spec:
-  group: cache.example.com
-  names:
-    kind: RedisCluster
-    plural: redisclusters
-  scope: Namespaced
-  versions:
-    - name: v1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                replicas:
-                  type: integer
-                  minimum: 3
-                version:
-                  type: string
-                persistence:
-                  type: boolean
-                resources:
-                  type: object
-            status:
-              type: object
-              properties:
-                phase:
-                  type: string
-                masterNode:
-                  type: string
-                replicas:
-                  type: integer
-```
-
-Controller would:
-1. Watch RedisCluster resources
-2. Create StatefulSet with Redis pods
-3. Configure Redis replication
-4. Create Service for access
-5. Monitor cluster health
-6. Handle failover (promote replica if master fails)
-7. Update status with current state
-
-**Q: How do you handle backward compatibility when updating a CRD?**
-
-Answer:
-1. **Add new version, keep old version served**:
-   ```yaml
-   versions:
-     - name: v1alpha1
-       served: true
-       storage: false
-     - name: v1
-       served: true
-       storage: true  # New storage version
-   ```
-
-2. **Use conversion webhooks** to translate between versions
-3. **Never remove required fields** from old versions
-4. **Add fields as optional** with defaults
-5. **Deprecation process**:
-   - v1alpha1: Mark as deprecated, still served
-   - Next release: v1alpha1 served=false (but schema remains)
-   - Two releases later: Remove v1alpha1 completely
-
-6. **Migration strategy**:
-   ```bash
-   # Convert all existing resources to new version
-   kubectl get resourcetype.v1alpha1 -A -o json | \
-     jq '.items[] | .apiVersion = "group/v1"' | \
-     kubectl apply -f -
-   ```
+1. What's the difference between a CRD and a controller?
+2. Can you use a CRD without a controller?
+3. How do controllers avoid conflicts when multiple instances are running?
+4. What happens if a controller crashes - is state lost?
+5. Name three operators used in production environments.
 
 ---
 
-### CNI NETWORKING - 1.5 hours
+## CNI Networking
 
-#### CNI Fundamentals (30 mins)
+**Time: 1 hour**
+
+### CNI Fundamentals
 
 **What is CNI?**
 
-CNI (Container Network Interface) is a specification for configuring network interfaces in Linux containers. When kubelet starts a pod, it calls the CNI plugin to set up networking.
+Container Network Interface - specification for configuring network interfaces in Linux containers.
+
+**CNI Responsibilities:**
+
+1. Assign IP addresses to pods
+2. Configure network routes
+3. Set up network policies
+4. Enable pod-to-pod communication across nodes
 
 **CNI Workflow:**
 
 ```
-kubelet starts pod
-       │
-       ▼
-[Create pause container]
-       │
-       ▼
-[Call CNI plugin]
-   │   CNI plugin creates:
-   │   - veth pair (one end in pod, one in host)
-   │   - Assign IP to pod
-   │   - Set up routes
-   │   - Configure iptables rules
-   │
-   ▼
-[Pod has network connectivity]
-       │
-       ▼
-[Start application containers]
-   (they share pause container's network namespace)
+kubelet starts a pod
+         ↓
+1. Creates network namespace for pod
+         ↓
+2. Calls CNI plugin binary
+   /opt/cni/bin/<plugin> ADD <namespace>
+         ↓
+3. CNI plugin:
+   - Allocates IP from pod CIDR
+   - Creates veth pair (virtual ethernet)
+   - Attaches one end to pod namespace
+   - Attaches other end to host bridge/network
+   - Configures routes
+   - Returns IP and network config
+         ↓
+4. kubelet receives network info
+         ↓
+5. Pod has network connectivity
 ```
 
-**RKE CNI Options:**
-
-1. **Canal (Default in RKE)**: Flannel + Calico
-   - Flannel: Handles pod networking (VXLAN overlay)
-   - Calico: Handles network policies
-
-2. **Calico**: Full-featured networking + policy
-   - BGP routing or VXLAN overlay
-   - Network policy enforcement
-   - More complex but powerful
-
-3. **Flannel**: Simple overlay network
-   - VXLAN, host-gw, or UDP backend
-   - No network policy support
-   - Easy to understand and debug
-
-**Hands-On CNI Exploration:**
+**CNI Files in RKE2:**
 
 ```bash
-# Check CNI plugin configuration (on any node)
-ls /etc/cni/net.d/
-cat /etc/cni/net.d/10-canal.conflist
+# CNI binaries
+ls -la /opt/cni/bin/
+# bandwidth, bridge, calico, dhcp, flannel, host-local, etc.
 
-# Check CNI binary plugins
-ls /opt/cni/bin/
-# You'll see: bridge, host-local, loopback, portmap, bandwidth, etc.
+# CNI configuration
+ls -la /var/lib/rancher/rke2/agent/etc/cni/net.d/
+# 10-canal.conflist or 10-calico.conflist
 
-# Check Canal/Calico components
-kubectl -n kube-system get pods | grep -E 'canal|calico'
-
-# View Canal pod logs
-kubectl -n kube-system logs canal-xxxxx -c calico-node
-kubectl -n kube-system logs canal-xxxxx -c flannel
-
-# Check pod IP allocation
-kubectl get pods -A -o wide | head -20
-# Notice IPs are from pod CIDR (e.g., 10.42.0.0/16)
-
-# On a node, check network interfaces
-ip addr show
-# You'll see caliXXXXX interfaces (one per pod on this node)
-
-# Examine a pod's network namespace
-docker inspect <container-id> | jq '.[0].NetworkSettings'
-# Or for containerd
-crictl inspect <container-id> | jq '.info.runtimeSpec.linux.namespaces'
-
-# Check routing table on node
-ip route show
-# Shows routes to pod CIDRs on other nodes
-
-# Check iptables rules created by kube-proxy and CNI
-iptables -t nat -L KUBE-SERVICES -n | head -20
-iptables -t filter -L KUBE-FORWARD -n
+# Example CNI config
+cat /var/lib/rancher/rke2/agent/etc/cni/net.d/10-canal.conflist
 ```
 
-#### Canal (Calico + Flannel) Deep Dive (30 mins)
+### Canal (Calico + Flannel)
+
+**What is Canal?**
+
+RKE2's default CNI - combines:
+- **Flannel**: Simple overlay network (pod-to-pod connectivity)
+- **Calico**: Network policies (security/segmentation)
 
 **Canal Architecture:**
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   Node 1                        │
-│  ┌──────────────┐       ┌──────────────┐       │
-│  │  Pod A       │       │  Pod B       │       │
-│  │  10.42.0.10  │       │  10.42.0.11  │       │
-│  └──────┬───────┘       └──────┬───────┘       │
-│         │                      │                │
-│     caliXXX                caliYYY              │
-│         │                      │                │
-│         └──────────┬───────────┘                │
-│                    │                            │
-│          ┌─────────▼─────────┐                  │
-│          │  Flannel VXLAN    │                  │
-│          │  (overlay network)│                  │
-│          └─────────┬─────────┘                  │
-│                    │                            │
-│               eth0 (10.0.1.10)                  │
-└────────────────────┼───────────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          │                     │
-┌─────────▼─────────┐  ┌────────▼────────┐
-│     Node 2        │  │     Node 3      │
-│  10.0.1.11        │  │  10.0.1.12      │
-│  Pods: 10.42.1.x  │  │  Pods: 10.42.2.x│
-└───────────────────┘  └─────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    Node 1 (10.0.1.10)                   │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │Pod A     │  │Pod B     │  │Pod C     │              │
+│  │10.42.0.1 │  │10.42.0.2 │  │10.42.0.3 │              │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘              │
+│       │             │             │                     │
+│       └──────┬──────┴──────┬──────┘                     │
+│              │             │                            │
+│         ┌────┴─────────────┴────┐                       │
+│         │  cbr0 bridge          │                       │
+│         │  10.42.0.0/24         │                       │
+│         └───────────┬───────────┘                       │
+│                     │                                   │
+│         ┌───────────┴───────────┐                       │
+│         │  flannel.1 (VXLAN)    │ ← Overlay network     │
+│         └───────────┬───────────┘                       │
+│                     │                                   │
+│         ┌───────────┴───────────┐                       │
+│         │  eth0: 10.0.1.10      │                       │
+│         └───────────────────────┘                       │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+            Physical Network
+                      │
+┌─────────────────────┴───────────────────────────────────┐
+│                    Node 2 (10.0.1.11)                   │
+│  Pod D: 10.42.1.1                                       │
+│  flannel.1 → eth0: 10.0.1.11                            │
+└─────────────────────────────────────────────────────────┘
+
+Pod A (10.42.0.1) talks to Pod D (10.42.1.1):
+1. Packet leaves Pod A
+2. Goes to cbr0 bridge
+3. Encapsulated by flannel.1 (VXLAN)
+4. Sent to Node 2's eth0 (10.0.1.11)
+5. Decapsulated by Node 2's flannel.1
+6. Delivered to Pod D
 ```
 
-**Flannel Component:**
-- Creates VXLAN tunnel between nodes
-- Encapsulates pod traffic
-- Maintains routing table for pod CIDRs
-
-**Calico Component:**
-- Enforces NetworkPolicy rules
-- Uses iptables/eBPF for policy enforcement
-- Monitors policy changes via Kubernetes API
-
-**Hands-On Canal Configuration:**
+**Canal Components:**
 
 ```bash
-# Check Flannel configuration
-kubectl -n kube-system get configmap canal-config -o yaml
+# Canal runs as DaemonSet (one pod per node)
+kubectl get ds -n kube-system | grep canal
+kubectl get pods -n kube-system -l k8s-app=canal
 
-# Key settings:
-# - net-conf.json: Flannel network config
-# - Network: 10.42.0.0/16 (pod CIDR)
-# - Backend: { "Type": "vxlan" }
+# On each node:
+# 1. calico-node: Manages network policies and routes
+# 2. flannel: Manages overlay network (VXLAN)
 
-# Check Calico configuration
-kubectl get installation.operator.tigera.io default -o yaml
+# Check Canal logs
+kubectl logs -n kube-system -l k8s-app=canal -c calico-node
+kubectl logs -n kube-system -l k8s-app=canal -c kube-flannel
 
-# View Calico IP pools
-kubectl get ippools -A
+# Calico configuration
+kubectl get configmap -n kube-system canal-config -o yaml
 
-# Check Flannel routes
-# On each node
-ip route show | grep flannel
+# Pod CIDR allocation
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.podCIDR}{"\n"}{end}'
+```
 
-# Check VXLAN interface
+**Flannel VXLAN:**
+
+```bash
+# View flannel interface
 ip -d link show flannel.1
-# Shows VXLAN tunnel interface
 
-# Test pod-to-pod communication
-kubectl run test-1 --image=nicolaka/netshoot -- sleep 3600
-kubectl run test-2 --image=nicolaka/netshoot -- sleep 3600
+# VXLAN details
+# - VNI (VXLAN Network Identifier): 1
+# - Port: 8472 (UDP)
+# - Encapsulation: VXLAN header + original packet
 
-# Get IPs
-POD1_IP=$(kubectl get pod test-1 -o jsonpath='{.status.podIP}')
-POD2_IP=$(kubectl get pod test-2 -o jsonpath='{.status.podIP}')
+# View flannel routes
+ip route | grep flannel
 
-# Ping between pods
-kubectl exec test-1 -- ping -c 3 $POD2_IP
+# Example:
+# 10.42.1.0/24 via 10.42.1.0 dev flannel.1 onlink
+# (Route to Node 2's pod CIDR goes through flannel.1)
 
-# Trace route
-kubectl exec test-1 -- traceroute $POD2_IP
-
-# Check which node each pod is on
-kubectl get pods -o wide | grep test-
-
-# Clean up
-kubectl delete pod test-1 test-2
+# Flannel subnet file (on each node)
+cat /run/flannel/subnet.env
+# FLANNEL_NETWORK=10.42.0.0/16
+# FLANNEL_SUBNET=10.42.0.1/24
+# FLANNEL_MTU=1450
 ```
 
-#### Network Policies (30 mins)
+### Network Policies
 
-**NetworkPolicy Types:**
+**What are Network Policies?**
 
-1. **Ingress**: Controls incoming traffic to pods
-2. **Egress**: Controls outgoing traffic from pods
+Firewall rules for pods - control ingress/egress traffic at IP and port level.
 
-**Hands-On Network Policies:**
+**Default Behavior (No Network Policies):**
 
-```bash
-# Create test namespace and pods
-kubectl create namespace netpol-test
-
-# Deploy frontend and backend
-kubectl -n netpol-test run frontend --image=nginx --labels=app=frontend
-kubectl -n netpol-test run backend --image=nginx --labels=app=backend
-
-# Expose backend
-kubectl -n netpol-test expose pod backend --port=80
-
-# Test connectivity (should work)
-kubectl -n netpol-test exec frontend -- curl -s backend:80
-
-# Apply default deny ingress policy
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: netpol-test
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-EOF
-
-# Test again (should fail)
-kubectl -n netpol-test exec frontend -- curl -s --connect-timeout 2 backend:80
-# Times out
-
-# Allow frontend to backend
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-frontend-to-backend
-  namespace: netpol-test
-spec:
-  podSelector:
-    matchLabels:
-      app: backend
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app: frontend
-      ports:
-        - protocol: TCP
-          port: 80
-EOF
-
-# Test again (should work)
-kubectl -n netpol-test exec frontend -- curl -s backend:80
-
-# Egress policy example - restrict outbound
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: frontend-egress
-  namespace: netpol-test
-spec:
-  podSelector:
-    matchLabels:
-      app: frontend
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: backend
-      ports:
-        - protocol: TCP
-          port: 80
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
-        - podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-EOF
-
-# Test: frontend can reach backend and DNS
-kubectl -n netpol-test exec frontend -- curl -s backend:80
-kubectl -n netpol-test exec frontend -- nslookup google.com
-
-# But cannot reach external internet (no route out)
-kubectl -n netpol-test exec frontend -- curl -s --connect-timeout 2 google.com
-# Times out
-
-# Namespace selector example
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-from-prod-namespace
-  namespace: netpol-test
-spec:
-  podSelector:
-    matchLabels:
-      app: backend
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              environment: production
-EOF
-
-# Visualize network policies
-kubectl -n netpol-test describe networkpolicy
-
-# Check Calico enforcement (on node)
-# Calico translates NetworkPolicies to iptables rules
-iptables -t filter -L -n | grep -A10 cali
+```
+ALL pods can talk to ALL pods (no restrictions)
 ```
 
-**Network Policy Best Practices:**
+**Example: Restrict Database Access**
 
-```bash
-# 1. Start with default deny
-cat <<EOF | kubectl apply -f -
+```yaml
+# Only allow web pods to access database pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: default-deny-all
+  name: db-network-policy
   namespace: production
 spec:
-  podSelector: {}
+  # Apply to pods with label app=database
+  podSelector:
+    matchLabels:
+      app: database
+
+  # Policy types
   policyTypes:
-    - Ingress
-    - Egress
-EOF
+  - Ingress
+  - Egress
 
-# 2. Explicitly allow required traffic
-# 3. Use namespace selectors for multi-tenancy
-# 4. Test policies in dev before production
-# 5. Monitor blocked traffic (Calico logs)
+  # Ingress rules (who can connect TO database)
+  ingress:
+  - from:
+    # Only from pods with app=web label
+    - podSelector:
+        matchLabels:
+          app: web
+    # On port 5432 (PostgreSQL)
+    ports:
+    - protocol: TCP
+      port: 5432
+
+  # Egress rules (what database can connect TO)
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow external backup server
+  - to:
+    - ipBlock:
+        cidr: 192.168.100.10/32
+    ports:
+    - protocol: TCP
+      port: 3306
 ```
 
-#### Troubleshooting Networking (30 mins)
+**Network Policy Selectors:**
 
-**Common Networking Issues:**
+```yaml
+# 1. podSelector - select pods in same namespace
+- podSelector:
+    matchLabels:
+      role: frontend
 
-**1. Pod cannot reach other pods:**
+# 2. namespaceSelector - select entire namespaces
+- namespaceSelector:
+    matchLabels:
+      name: production
+
+# 3. podSelector + namespaceSelector - pods in specific namespace
+- namespaceSelector:
+    matchLabels:
+      name: production
+  podSelector:
+    matchLabels:
+      role: frontend
+
+# 4. ipBlock - IP ranges (external services)
+- ipBlock:
+    cidr: 10.0.0.0/8
+    except:
+    - 10.0.1.0/24
+```
+
+**Testing Network Policies:**
 
 ```bash
-# Check pod IPs
-kubectl get pods -A -o wide
+# Create test pods
+kubectl run web --image=nginx -l app=web
+kubectl run db --image=postgres -l app=database
+kubectl run other --image=busybox -l app=other -- sleep 3600
 
-# Check CNI plugin status
-kubectl -n kube-system get pods | grep -E 'canal|calico|flannel'
+# Before network policy: all can connect
+kubectl exec web -- curl db:5432
+kubectl exec other -- nc -zv db 5432  # Should work
 
-# Check CNI logs
-kubectl -n kube-system logs -l k8s-app=canal -c calico-node
-kubectl -n kube-system logs -l k8s-app=canal -c flannel
+# Apply network policy
+kubectl apply -f db-network-policy.yaml
 
-# On node, check routes
-ip route show
+# After network policy:
+kubectl exec web -- curl db:5432      # Works (allowed)
+kubectl exec other -- nc -zv db 5432  # Fails (blocked)
 
-# Check if VXLAN tunnel is up
-ip -d link show flannel.1
-
-# Test direct pod ping
-kubectl exec <pod> -- ping <other-pod-ip>
-
-# Check for network policy blocking
-kubectl describe networkpolicy -n <namespace>
+# Verify policy
+kubectl describe networkpolicy db-network-policy
 ```
 
-**2. Pod cannot reach services:**
+**Calico Network Policies (Advanced):**
 
-```bash
-# Check service exists
-kubectl get svc
+```yaml
+# Calico extends Kubernetes NetworkPolicy with:
+# - Egress rules to external IPs
+# - Global policies (cluster-wide)
+# - Deny rules (explicit deny)
 
-# Check endpoints are populated
-kubectl get endpoints <service-name>
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  name: deny-egress-external
+spec:
+  # Apply to all pods
+  selector: all()
 
-# If no endpoints, pods might not match service selector
-kubectl get svc <service-name> -o yaml | grep -A5 selector
-kubectl get pods -l <selector> -n <namespace>
+  types:
+  - Egress
 
-# Check kube-proxy is running
-kubectl -n kube-system get pods -l k8s-app=kube-proxy
+  egress:
+  # Allow internal cluster communication
+  - action: Allow
+    destination:
+      nets:
+      - 10.42.0.0/16  # Pod CIDR
+      - 10.43.0.0/16  # Service CIDR
 
-# Check kube-proxy logs
-kubectl -n kube-system logs -l k8s-app=kube-proxy
+  # Allow DNS
+  - action: Allow
+    protocol: UDP
+    destination:
+      ports:
+      - 53
 
-# Check iptables rules for service
-iptables -t nat -L KUBE-SERVICES -n | grep <service-name>
+  # Deny everything else
+  - action: Deny
 
-# Test service from a pod
-kubectl run test --image=nicolaka/netshoot -it --rm -- curl <service-name>:<port>
+# View Calico policies
+kubectl get globalnetworkpolicies
+kubectl get networkpolicies --all-namespaces
 ```
 
-**3. External traffic cannot reach cluster:**
+**Knowledge Check:**
 
-```bash
-# Check ingress controller
-kubectl -n ingress-nginx get pods
-
-# Check ingress resource
-kubectl get ingress -A
-kubectl describe ingress <ingress-name>
-
-# Check ingress controller service
-kubectl -n ingress-nginx get svc
-
-# If LoadBalancer, check external IP assigned
-kubectl -n ingress-nginx get svc ingress-nginx-controller
-
-# Check ingress logs
-kubectl -n ingress-nginx logs -f deployment/ingress-nginx-controller
-
-# Test from outside cluster
-curl -v http://<ingress-ip> -H "Host: myapp.example.com"
-```
-
-**4. DNS not working:**
-
-```bash
-# Check CoreDNS pods
-kubectl -n kube-system get pods -l k8s-app=kube-dns
-
-# Check CoreDNS logs
-kubectl -n kube-system logs -l k8s-app=kube-dns
-
-# Check CoreDNS service
-kubectl -n kube-system get svc kube-dns
-
-# Test DNS from pod
-kubectl run test --image=busybox -it --rm -- nslookup kubernetes.default
-
-# Check /etc/resolv.conf in pod
-kubectl run test --image=busybox -it --rm -- cat /etc/resolv.conf
-
-# Should point to kube-dns service IP (usually 10.43.0.10)
-```
-
-**5. Network performance issues:**
-
-```bash
-# Check MTU settings (VXLAN overhead)
-# Pod MTU should be 1450 (1500 - 50 for VXLAN)
-kubectl exec <pod> -- ip link show eth0
-
-# Test bandwidth between pods
-kubectl run iperf-server --image=networkstatic/iperf3 -- iperf3 -s
-kubectl run iperf-client --image=networkstatic/iperf3 -it --rm -- \
-  iperf3 -c <iperf-server-ip>
-
-# Check for packet loss
-kubectl exec <pod> -- ping -c 100 <target-ip>
-
-# Check CNI plugin CPU usage
-kubectl top pods -n kube-system | grep -E 'canal|calico'
-```
+1. What's the difference between Flannel and Calico in Canal?
+2. How do pods on different nodes communicate?
+3. What happens if you delete a Canal pod?
+4. Do Network Policies apply to services or pods?
+5. How would you troubleshoot a pod that can't reach another pod?
 
 ---
 
-### CSI STORAGE (LONGHORN) - 1.5 hours
+## CSI Storage & Longhorn
 
-#### CSI Architecture (30 mins)
+**Time: 1 hour**
+
+### CSI Architecture
+
+**What is CSI?**
+
+Container Storage Interface - standard for exposing storage systems to containers.
 
 **CSI Components:**
 
 ```
-┌────────────────────────────────────────────────┐
-│             Kubernetes Control Plane           │
-│  ┌──────────────────────────────────────────┐  │
-│  │     CSI Controller Plugin (StatefulSet)  │  │
-│  │  - Provisioner (creates volumes)         │  │
-│  │  - Attacher (attaches to nodes)          │  │
-│  │  - Resizer (resizes volumes)             │  │
-│  │  - Snapshotter (creates snapshots)       │  │
-│  └──────────────────────────────────────────┘  │
-└────────────────────────────────────────────────┘
-                     │
-        ┌────────────┴────────────┐
-        │                         │
-┌───────▼────────┐      ┌─────────▼────────┐
-│    Node 1      │      │     Node 2       │
-│  ┌──────────┐  │      │   ┌──────────┐   │
-│  │   CSI    │  │      │   │   CSI    │   │
-│  │ Node     │  │      │   │ Node     │   │
-│  │ Plugin   │  │      │   │ Plugin   │   │
-│  └─────┬────┘  │      │   └─────┬────┘   │
-│        │       │      │         │        │
-│   ┌────▼────┐  │      │    ┌────▼────┐   │
-│   │ Volume  │  │      │    │ Volume  │   │
-│   │ Mounted │  │      │    │ Mounted │   │
-│   │ to Pod  │  │      │    │ to Pod  │   │
-│   └─────────┘  │      │    └─────────┘   │
-└────────────────┘      └──────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                 Kubernetes Cluster                   │
+│                                                      │
+│  ┌────────────────┐         ┌────────────────┐      │
+│  │  PVC           │         │  Pod           │      │
+│  │  my-data       │         │  nginx         │      │
+│  └───────┬────────┘         └───────┬────────┘      │
+│          │                          │               │
+│          │ Binds                    │ Mounts        │
+│          ↓                          ↓               │
+│  ┌────────────────┐         ┌────────────────┐      │
+│  │  PV            │         │  Volume        │      │
+│  │  pvc-abc123    │────────→│  /var/lib/data │      │
+│  └───────┬────────┘         └────────────────┘      │
+│          │                                          │
+│          │ Provisioned by                           │
+│          ↓                                          │
+│  ┌────────────────────────────────┐                 │
+│  │  CSI Driver (Longhorn)         │                 │
+│  │  - Controller (provision/attach)│                │
+│  │  - Node Plugin (mount/unmount) │                 │
+│  └────────────────┬───────────────┘                 │
+│                   │                                 │
+└───────────────────┼─────────────────────────────────┘
+                    │
+                    ↓
+          ┌─────────────────────┐
+          │  Storage Backend    │
+          │  (Disks, NFS, etc.) │
+          └─────────────────────┘
 ```
 
 **CSI Volume Lifecycle:**
 
 ```
-1. PVC Created by user
-       │
-       ▼
-2. CSI Provisioner creates PV
-   (calls CSI plugin CreateVolume)
-       │
-       ▼
-3. PV bound to PVC
-       │
-       ▼
-4. Pod scheduled to node
-       │
-       ▼
-5. CSI Attacher attaches volume to node
-   (calls CSI plugin ControllerPublishVolume)
-       │
-       ▼
-6. CSI Node Plugin mounts volume
-   (calls CSI plugin NodeStageVolume, NodePublishVolume)
-       │
-       ▼
-7. Pod can use volume
-       │
-       ▼
-8. Pod deleted
-       │
-       ▼
-9. CSI Node Plugin unmounts volume
-       │
-       ▼
-10. CSI Attacher detaches from node
-       │
-       ▼
-11. PVC deleted (if reclaim policy is Delete)
-       │
-       ▼
-12. CSI Provisioner deletes volume
+1. CREATE: PVC created by user
+   ↓
+2. PROVISION: CSI controller provisions storage (creates PV)
+   ↓
+3. BIND: Kubernetes binds PV to PVC
+   ↓
+4. ATTACH: CSI controller attaches volume to node (if pod scheduled)
+   ↓
+5. MOUNT: CSI node plugin mounts volume into pod
+   ↓
+6. USE: Application reads/writes data
+   ↓
+7. UNMOUNT: CSI node plugin unmounts volume (pod deleted)
+   ↓
+8. DETACH: CSI controller detaches volume from node
+   ↓
+9. DELETE: CSI controller deletes volume (if reclaimPolicy: Delete)
 ```
 
-#### Longhorn Deep Dive (45 mins)
+### Longhorn Deep Dive
+
+**What is Longhorn?**
+
+Cloud-native distributed block storage for Kubernetes:
+- Replicated storage (high availability)
+- Snapshots and backups
+- Disaster recovery
+- Easy to use UI
 
 **Longhorn Architecture:**
 
 ```
-┌─────────────────────────────────────────────────────┐
-│               Longhorn Manager (DaemonSet)          │
-│   Runs on every node - orchestrates volumes         │
-└──────────────────┬──────────────────────────────────┘
-                   │
-        ┌──────────┴──────────┐
-        │                     │
-┌───────▼────────┐   ┌────────▼───────┐
-│  Longhorn      │   │   Longhorn     │
-│  Engine        │   │   Replica      │
-│  (Frontend)    │   │   (Backend)    │
-│                │   │                │
-│  - iSCSI       │◄─►│  - Stores data │
-│  - Serves I/O  │   │  - Replication │
-└───────┬────────┘   └────────────────┘
-        │
-   ┌────▼─────┐
-   │   Pod    │
-   │  Volume  │
-   └──────────┘
+┌────────────────────────────────────────────────────────┐
+│                 Longhorn System                        │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Longhorn Manager (Deployment)                   │  │
+│  │  - API server                                    │  │
+│  │  - Orchestration                                 │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Longhorn Driver (DaemonSet)                     │  │
+│  │  - CSI plugin on each node                       │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Longhorn UI (Deployment)                        │  │
+│  │  - Web interface for management                  │  │
+│  └──────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│                 Volume: pvc-abc123                     │
+│  Replicas: 3, Size: 10Gi                              │
+│                                                        │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐       │
+│  │ Replica 1  │  │ Replica 2  │  │ Replica 3  │       │
+│  │ Node 1     │  │ Node 2     │  │ Node 3     │       │
+│  │ /longhorn/ │  │ /longhorn/ │  │ /longhorn/ │       │
+│  │ replicas/  │  │ replicas/  │  │ replicas/  │       │
+│  └──────┬─────┘  └──────┬─────┘  └──────┬─────┘       │
+│         │                │                │            │
+│         └────────┬───────┴────────┬───────┘            │
+│                  ↓                                     │
+│         ┌────────────────┐                             │
+│         │ Engine Pod     │                             │
+│         │ (Node 1)       │                             │
+│         │ - Handles I/O  │                             │
+│         │ - Replication  │                             │
+│         └───────┬────────┘                             │
+│                 │                                      │
+│                 ↓                                      │
+│         ┌────────────────┐                             │
+│         │ Application    │                             │
+│         │ Pod (Node 1)   │                             │
+│         └────────────────┘                             │
+└────────────────────────────────────────────────────────┘
 ```
 
-**Installing Longhorn:**
+**Longhorn Components:**
 
 ```bash
-# Install Longhorn using kubectl
-kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.6.0/deploy/longhorn.yaml
+# Longhorn namespace
+kubectl get all -n longhorn-system
 
-# Or via Helm
-helm repo add longhorn https://charts.longhorn.io
-helm install longhorn longhorn/longhorn \
-  --namespace longhorn-system \
-  --create-namespace
+# Key components:
+# 1. longhorn-manager (DaemonSet): Orchestration on each node
+# 2. longhorn-driver-deployer: CSI driver
+# 3. longhorn-ui: Web interface
+# 4. instance-manager-* (per node): Manages engine/replica processes
 
-# Check Longhorn installation
-kubectl -n longhorn-system get pods
+# CRDs
+kubectl get crd | grep longhorn
+# - volumes.longhorn.io
+# - replicas.longhorn.io
+# - engines.longhorn.io
+# - nodes.longhorn.io
+# - settings.longhorn.io
 
-# You'll see:
-# - longhorn-manager (DaemonSet on every node)
-# - longhorn-driver-deployer
-# - longhorn-ui
-# - CSI plugin pods
+# View volumes
+kubectl get volumes.longhorn.io -n longhorn-system
 
-# Check CSI driver registration
-kubectl get csidrivers
-# Should show: driver.longhorn.io
-
-# Check storage classes
-kubectl get storageclass
-# Should show: longhorn (default)
-
-# Access Longhorn UI
-kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
-# Visit http://localhost:8080
+# View replicas (where data is stored)
+kubectl get replicas.longhorn.io -n longhorn-system
 ```
 
-**Longhorn Storage Classes:**
+**Longhorn Volume Flow:**
 
 ```bash
-# View default Longhorn StorageClass
-kubectl get storageclass longhorn -o yaml
+# 1. Create StorageClass
+kubectl get sc longhorn -o yaml
 
-# Key parameters:
-# - numberOfReplicas: "3" (data replicated to 3 nodes)
-# - staleReplicaTimeout: "30" (minutes before replica marked stale)
-# - fromBackup: "" (restore from backup)
-
-# Create custom StorageClass
-cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: longhorn-fast
+  name: longhorn
 provisioner: driver.longhorn.io
-allowVolumeExpansion: true
 parameters:
-  numberOfReplicas: "2"
-  staleReplicaTimeout: "20"
-  diskSelector: "ssd"
-  nodeSelector: "storage-node"
-EOF
-```
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  fromBackup: ""
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
 
-**Using Longhorn Volumes:**
-
-```bash
-# Create PVC
+# 2. Create PVC
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: longhorn-pvc
+  name: my-data
 spec:
   accessModes:
-    - ReadWriteOnce
+  - ReadWriteOnce
   storageClassName: longhorn
   resources:
     requests:
-      storage: 5Gi
+      storage: 10Gi
 EOF
 
-# Check PVC status
-kubectl get pvc longhorn-pvc
-# STATUS: Bound
+# 3. Longhorn controller provisions volume
+# - Creates Volume CR
+# - Creates 3 Replica CRs (on different nodes)
+# - Creates Engine CR
 
-# Check PV created
-kubectl get pv
-
-# View Longhorn volume details
-# In Longhorn UI or via kubectl
-kubectl -n longhorn-system get volumes
-kubectl -n longhorn-system describe volume pvc-xxxxx
-
-# Use PVC in pod
+# 4. Use in pod
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: test-longhorn
+  name: nginx
 spec:
   containers:
-    - name: app
-      image: nginx
-      volumeMounts:
-        - name: data
-          mountPath: /data
-  volumes:
+  - name: nginx
+    image: nginx
+    volumeMounts:
     - name: data
-      persistentVolumeClaim:
-        claimName: longhorn-pvc
-EOF
-
-# Verify pod is running
-kubectl get pod test-longhorn
-
-# Write data to volume
-kubectl exec test-longhorn -- sh -c 'echo "Hello Longhorn" > /data/test.txt'
-
-# Delete pod
-kubectl delete pod test-longhorn
-
-# Recreate pod (same PVC)
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-longhorn-2
-spec:
-  containers:
-    - name: app
-      image: nginx
-      volumeMounts:
-        - name: data
-          mountPath: /data
+      mountPath: /var/www/html
   volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: longhorn-pvc
+  - name: data
+    persistentVolumeClaim:
+      claimName: my-data
 EOF
 
-# Data persists
-kubectl exec test-longhorn-2 -- cat /data/test.txt
-# Output: Hello Longhorn
+# 5. When pod is scheduled:
+# - CSI attaches volume to node
+# - Engine pod starts on same node as application pod
+# - Volume mounted into pod
+
+# Trace the flow:
+kubectl get pvc my-data
+kubectl get pv <pv-name>
+kubectl get volumes.longhorn.io -n longhorn-system
+kubectl get engines.longhorn.io -n longhorn-system
+kubectl get replicas.longhorn.io -n longhorn-system
+
+# Find replica pods
+kubectl get pods -n longhorn-system | grep instance-manager
 ```
 
-**Longhorn Replicas:**
+**Longhorn UI:**
 
 ```bash
-# Check volume replicas in UI or:
-kubectl -n longhorn-system get replicas
+# Access Longhorn UI
+kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
 
-# Each volume has 3 replicas (by default) on different nodes
-# Check replica distribution for a volume
-kubectl -n longhorn-system get replicas -o wide | grep pvc-xxxxx
+# Open browser: http://localhost:8080
 
-# Simulate node failure
-# Longhorn will detect and rebuild replica on another node
-
-# Check volume health
-kubectl -n longhorn-system get volumes -o yaml | grep state
-# State should be: healthy, degraded, or faulted
+# UI shows:
+# - Volumes (list, create, attach, snapshot, backup)
+# - Nodes (disk usage, scheduling status)
+# - Settings (replica count, backup target, etc.)
+# - Backups (view, restore)
 ```
 
-#### Longhorn Backup and Restore (30 mins)
+### Backup and Restore
 
-**Configure Backup Target:**
-
-```bash
-# Longhorn supports S3-compatible storage for backups
-# Configure in Longhorn UI: Settings -> Backup Target
-
-# Or via kubectl
-kubectl -n longhorn-system edit settings backup-target
-
-# Set to S3 endpoint:
-# s3://bucket-name@region/path
-
-# Configure backup credentials
-kubectl -n longhorn-system create secret generic aws-secret \
-  --from-literal=AWS_ACCESS_KEY_ID=<key> \
-  --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
-```
-
-**Create Backups:**
+**Snapshots (Local):**
 
 ```bash
-# One-time snapshot
-# In Longhorn UI: Select volume -> Create Snapshot
-
-# Or via kubectl (create VolumeSnapshot)
-cat <<EOF | kubectl apply -f -
-apiVersion: snapshot.storage.k8s.io/v1
-kind: VolumeSnapshot
+# Create snapshot via kubectl
+kubectl create -f - <<EOF
+apiVersion: longhorn.io/v1beta1
+kind: Snapshot
 metadata:
-  name: longhorn-snapshot-1
-spec:
-  volumeSnapshotClassName: longhorn
-  source:
-    persistentVolumeClaimName: longhorn-pvc
-EOF
-
-# Check snapshot
-kubectl get volumesnapshot
-
-# Create backup from snapshot (Longhorn UI)
-# Or configure recurring backup job
-
-# Recurring backup
-# In Longhorn UI: Volume -> Schedule Recurring Backup
-# Or create RecurringJob CR
-
-cat <<EOF | kubectl apply -f -
-apiVersion: longhorn.io/v1beta2
-kind: RecurringJob
-metadata:
-  name: backup-daily
+  name: my-data-snapshot-1
   namespace: longhorn-system
 spec:
-  cron: "0 2 * * *"
-  task: "backup"
-  retain: 7
-  concurrency: 1
-  labels:
-    interval: daily
+  volumeName: pvc-abc123
 EOF
 
-# Apply job to volume
-# Longhorn UI: Volume -> Attach label "interval=daily"
+# Or via Longhorn UI or CLI
+# Snapshots are stored locally on replica nodes
+
+# List snapshots for a volume
+kubectl get snapshots.longhorn.io -n longhorn-system
+
+# Restore from snapshot (creates new volume)
+# Use Longhorn UI or create PVC with snapshot parameter
 ```
 
-**Restore from Backup:**
+**Backups (Remote S3/NFS):**
 
 ```bash
-# List available backups
-# Longhorn UI: Backup -> List backups
+# Configure backup target (S3 example)
+kubectl edit settings.longhorn.io -n longhorn-system backup-target
 
-# Restore to new PVC
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: restored-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: longhorn
-  dataSource:
-    name: longhorn-backup-xxxxx
-    kind: VolumeSnapshot
-    apiGroup: snapshot.storage.k8s.io
-  resources:
-    requests:
-      storage: 5Gi
-EOF
+# Set:
+# backup-target: s3://my-bucket@us-west-2/
+# backup-target-credential-secret: aws-secret
 
-# Or restore via Longhorn UI:
-# Backup -> Select backup -> Restore
+# Create AWS credential secret
+kubectl create secret generic aws-secret \
+  -n longhorn-system \
+  --from-literal=AWS_ACCESS_KEY_ID=<key> \
+  --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
 
-# Mount restored PVC to pod
-kubectl run test-restore --image=nginx \
-  --overrides='{"spec":{"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"restored-pvc"}}],"containers":[{"name":"nginx","image":"nginx","volumeMounts":[{"name":"data","mountPath":"/data"}]}]}}'
+# Create backup (via UI or CR)
+# Backups are incremental and deduplicated
 
-# Verify data
-kubectl exec test-restore -- ls /data
+# List backups
+kubectl get backups.longhorn.io -n longhorn-system
+
+# Restore from backup
+# 1. Create PVC from backup (via UI or annotation)
+# 2. Longhorn downloads data from S3
+# 3. Creates volume with restored data
+
+# Disaster recovery scenario:
+# - Cluster 1 has volume with backups to S3
+# - Cluster 2 (new cluster) configured with same S3 backup target
+# - In Cluster 2 Longhorn UI, you'll see backups from Cluster 1
+# - Restore backup → new volume created in Cluster 2
 ```
 
-**Disaster Recovery:**
+**Troubleshooting Longhorn:**
 
 ```bash
-# Scenario: Complete cluster loss, need to restore
+# Volume stuck in "Attaching"
+kubectl describe volume.longhorn.io -n longhorn-system <volume-name>
+# Check: Node has available disk space?
+# Check: Engine pod running?
 
-# 1. Deploy new cluster with Longhorn
-helm install longhorn longhorn/longhorn \
-  --namespace longhorn-system \
-  --create-namespace
+# Replica failed
+kubectl get replicas.longhorn.io -n longhorn-system | grep Failed
+# Longhorn auto-rebuilds replicas
+# Check: journalctl -u rke2-agent | grep longhorn
 
-# 2. Configure same backup target
-kubectl -n longhorn-system edit settings backup-target
-# Set to same S3 bucket
+# Volume read-only
+# Cause: All replicas became unavailable
+# Fix: Check node disk space, restart instance-manager pods
 
-# 3. List available backups
-# Longhorn UI: Backup tab shows all backups from S3
+# Backup fails
+kubectl logs -n longhorn-system <longhorn-manager-pod> | grep backup
+# Check: S3 credentials correct?
+# Check: Network connectivity to S3?
 
-# 4. Restore volumes
-# For each volume backup:
-# - Create PVC from backup
-# - Longhorn downloads data from S3
-# - Recreate workload pods with restored PVCs
-
-# 5. Verify applications
-kubectl get pods
-kubectl logs <pod>
+# View support bundle (comprehensive diagnostic info)
+# Download from Longhorn UI → Settings → Generate Support Bundle
 ```
 
-#### Knowledge Checklist
+**Knowledge Check:**
 
-- [ ] **CSI Components**: What's the difference between controller and node plugin?
-- [ ] **Volume Lifecycle**: Walk through PVC -> PV -> Mount -> Unmount
-- [ ] **Longhorn Architecture**: How does replication work?
-- [ ] **Storage Classes**: What parameters can you configure?
-- [ ] **Snapshots**: Difference between snapshot and backup?
-- [ ] **Backup Target**: What storage backends does Longhorn support?
-- [ ] **Restore**: Can you restore to a different cluster?
-- [ ] **Performance**: What affects Longhorn volume performance?
+1. How many replicas does Longhorn create by default?
+2. What happens if a node with a replica goes down?
+3. Can you resize a Longhorn volume?
+4. What's the difference between a snapshot and a backup?
+5. How would you migrate volumes from one cluster to another?
 
 ---
 
-### CLUSTER LIFECYCLE & TROUBLESHOOTING - 1.5 hours
+## Cluster Lifecycle
 
-#### Upgrade Strategies (30 mins)
+**Time: 45 minutes**
 
-**Kubernetes Version Compatibility:**
+### Upgrades
 
-```
-Version skew policy:
-- kube-apiserver: N (e.g., 1.28)
-- controller-manager, scheduler: N or N-1
-- kubelet: N, N-1, or N-2
-- kubectl: N+1, N, or N-1
+**RKE2 Upgrade Process:**
 
-Example compatible versions:
-- API Server: 1.28
-- Controller Manager: 1.28 or 1.27
-- Kubelet: 1.28, 1.27, or 1.26
-- kubectl: 1.29, 1.28, or 1.27
-```
+RKE2 uses a rolling upgrade approach managed via systemd or Rancher.
 
-**RKE1 Upgrade Process:**
+**Manual Upgrade (systemd):**
 
 ```bash
 # Check current version
 kubectl version --short
-rke version
+/usr/local/bin/rke2 --version
 
-# Plan upgrade
-# 1. Review release notes
-# 2. Test in dev/staging first
-# 3. Backup etcd
-rke etcd snapshot-save --config cluster.yml --name pre-upgrade
+# Upgrade process (one node at a time)
 
-# Update cluster.yml
-# Change: kubernetes_version: v1.29.0-rancher1-1
-vi cluster.yml
+# 1. Cordon node (prevent new pods)
+kubectl cordon node-1
 
-# Configure upgrade strategy
-# Already in cluster.yml:
-upgrade_strategy:
-  max_unavailable_worker: "10%"
-  max_unavailable_controlplane: "1"
-  drain: true
-  drain_input:
-    delete_local_data: true
-    force: true
-    grace_period: 60
-    ignore_daemon_sets: true
-    timeout: 120
+# 2. Drain node (evict existing pods)
+kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
 
-# Perform upgrade
-rke up --config cluster.yml
+# 3. Stop RKE2
+systemctl stop rke2-server  # or rke2-agent
 
-# Upgrade process:
-# 1. Control plane node 1: drain, upgrade, uncordon
-# 2. Wait for healthy
-# 3. Control plane node 2: same
-# 4. Control plane node 3: same
-# 5. Worker nodes in batches (10% at a time)
+# 4. Update RKE2 binary
+curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=v1.28.5+rke2r1 sh -
 
-# Monitor upgrade
+# 5. Start RKE2
+systemctl start rke2-server  # or rke2-agent
+
+# 6. Wait for node to be Ready
 kubectl get nodes -w
 
-# Verify upgrade
-kubectl version
-kubectl get nodes
-
-# Check workload health
-kubectl get pods -A
-```
-
-**Manual Node Drain:**
-
-```bash
-# Drain node (evict pods gracefully)
-kubectl drain node-1 \
-  --ignore-daemonsets \
-  --delete-emptydir-data \
-  --grace-period=60 \
-  --timeout=5m
-
-# Upgrade node
-# (RKE does this automatically)
-
-# Uncordon node
+# 7. Uncordon node
 kubectl uncordon node-1
 
-# Pods will be rescheduled back
+# 8. Verify node version
+kubectl get node node-1 -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+
+# 9. Repeat for remaining nodes
 ```
 
-#### Common RKE Issues (30 mins)
-
-**Issue 1: RKE Up Fails on SSH Connection:**
+**Automated Upgrade (System Upgrade Controller):**
 
 ```bash
-# Symptom
-rke up --config cluster.yml
-# Error: Failed to dial ssh: handshake failed
+# Install system-upgrade-controller
+kubectl apply -f https://github.com/rancher/system-upgrade-controller/releases/latest/download/system-upgrade-controller.yaml
 
-# Diagnosis
-# 1. Test SSH manually
-ssh -i ~/.ssh/id_rsa ubuntu@10.0.1.10
-
-# 2. Check SSH key permissions
-ls -la ~/.ssh/id_rsa
-# Should be 600
-
-chmod 600 ~/.ssh/id_rsa
-
-# 3. Check node SSH config
-# On node:
-cat /etc/ssh/sshd_config | grep -E 'PubkeyAuthentication|PasswordAuthentication'
-
-# 4. Check firewall
-# Ensure port 22 is open
-
-# Fix
-# Update cluster.yml with correct SSH key path and user
-nodes:
-  - address: 10.0.1.10
-    user: ubuntu
-    ssh_key_path: ~/.ssh/id_rsa
-    port: 22
-```
-
-**Issue 2: etcd Cluster Unhealthy:**
-
-```bash
-# Symptom
-kubectl get nodes
-# Error: Unable to connect to the server
-
-# Diagnosis
-# SSH to etcd node
-ssh ubuntu@10.0.1.10
-
-# Check etcd container
-docker ps | grep etcd
-
-# Check etcd health
-docker exec etcd etcdctl \
-  --cacert=/etc/kubernetes/ssl/kube-ca.pem \
-  --cert=/etc/kubernetes/ssl/kube-etcd-*.pem \
-  --key=/etc/kubernetes/ssl/kube-etcd-*-key.pem \
-  --endpoints=https://127.0.0.1:2379 \
-  endpoint health
-
-# Check etcd logs
-docker logs etcd --tail=100
-
-# Common causes:
-# - etcd out of space (check df -h /var/lib/etcd)
-# - Clock skew between members
-# - Network partition
-# - Certificate expired
-
-# Fix: Restore from backup if corrupted
-rke etcd snapshot-restore \
-  --config cluster.yml \
-  --name snapshot-name
-```
-
-**Issue 3: Node Won't Join Cluster:**
-
-```bash
-# Symptom
-# New node added to cluster.yml
-# rke up succeeds but node is NotReady
-
-# Diagnosis
-kubectl get nodes
-# Node shows NotReady
-
-kubectl describe node new-node
-
-# Check kubelet on node
-ssh ubuntu@new-node
-docker ps | grep kubelet
-docker logs kubelet
-
-# Common causes:
-# - CNI plugin not running
-# - Docker not running
-# - Insufficient resources
-# - Firewall blocking communication
-
-# Check CNI
-docker ps | grep canal
-
-# Check connectivity to other nodes
-ping 10.0.1.10
-
-# Fix: Ensure Docker and networking are healthy
-systemctl status docker
-docker network ls
-```
-
-**Issue 4: Pods Can't Pull Images:**
-
-```bash
-# Symptom
-kubectl get pods
-# Status: ImagePullBackOff
-
-kubectl describe pod <pod>
-# Error: Failed to pull image
-
-# Causes:
-# 1. Image doesn't exist
-# 2. Private registry authentication
-# 3. Network issue
-# 4. Disk space on node
-
-# Fix 1: Check image exists
-docker pull <image>
-
-# Fix 2: Create image pull secret
-kubectl create secret docker-registry regcred \
-  --docker-server=registry.example.com \
-  --docker-username=user \
-  --docker-password=pass \
-  --docker-email=email@example.com
-
-# Use in pod
+# Create upgrade plan
+cat <<EOF | kubectl apply -f -
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: server-plan
+  namespace: system-upgrade
 spec:
-  imagePullSecrets:
-    - name: regcred
+  concurrency: 1  # Upgrade 1 node at a time
+  cordon: true
+  nodeSelector:
+    matchExpressions:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+  serviceAccountName: system-upgrade
+  upgrade:
+    image: rancher/rke2-upgrade
+  version: v1.28.5+rke2r1
+---
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: agent-plan
+  namespace: system-upgrade
+spec:
+  concurrency: 2  # Upgrade 2 workers at a time
+  cordon: true
+  nodeSelector:
+    matchExpressions:
+    - key: node-role.kubernetes.io/control-plane
+      operator: DoesNotExist
+  prepare:
+    args:
+    - prepare
+    - server-plan
+    image: rancher/rke2-upgrade
+  serviceAccountName: system-upgrade
+  upgrade:
+    image: rancher/rke2-upgrade
+  version: v1.28.5+rke2r1
+EOF
 
-# Fix 3: Check node disk space
-ssh node
-df -h /var/lib/docker
+# Watch upgrade progress
+kubectl get plans -n system-upgrade
+kubectl get nodes -w
+kubectl logs -n system-upgrade -l upgrade.cattle.io/plan=server-plan
 ```
 
-#### Node Troubleshooting (30 mins)
+**Upgrade Best Practices:**
 
-**Node Not Ready:**
+1. **Always backup etcd before upgrading**
+2. Upgrade control plane nodes first, then workers
+3. Upgrade one control plane node at a time
+4. Test in staging environment first
+5. Read release notes for breaking changes
+6. Upgrade one minor version at a time (1.27 → 1.28 → 1.29, not 1.27 → 1.29)
+
+### Backup & Disaster Recovery
+
+**etcd Snapshots:**
+
+```bash
+# RKE2 automatic snapshots (configured in config.yaml)
+# /etc/rancher/rke2/config.yaml:
+# etcd-snapshot-schedule-cron: "0 */12 * * *"  # Every 12 hours
+# etcd-snapshot-retention: 5
+# etcd-snapshot-dir: /var/lib/rancher/rke2/server/db/snapshots
+
+# List local snapshots
+ls -lh /var/lib/rancher/rke2/server/db/snapshots/
+
+# Manual snapshot
+rke2 etcd-snapshot save --name manual-snapshot-$(date +%Y%m%d-%H%M%S)
+
+# Or via kubectl (RKE2 exposes etcd snapshot API)
+kubectl exec -n kube-system etcd-$(hostname) -- \
+  etcdctl snapshot save /var/lib/rancher/rke2/server/db/snapshots/manual.db
+
+# Verify snapshot
+rke2 etcd-snapshot ls
+
+# S3 backups (automatic, if configured)
+# config.yaml:
+# etcd-s3: true
+# etcd-s3-bucket: my-backups
+# etcd-s3-region: us-west-2
+# etcd-s3-access-key: <key>
+# etcd-s3-secret-key: <secret>
+```
+
+**Restore from Snapshot:**
+
+```bash
+# CRITICAL: This is a destructive operation
+# All data after snapshot timestamp will be lost
+
+# 1. Stop RKE2 on ALL nodes
+systemctl stop rke2-server
+
+# 2. Restore from snapshot (on first server)
+rke2 server \
+  --cluster-reset \
+  --cluster-reset-restore-path=/var/lib/rancher/rke2/server/db/snapshots/snapshot.db
+
+# This will:
+# - Wipe existing etcd data
+# - Restore from snapshot
+# - Reset cluster to single-node state
+
+# 3. Start RKE2 on first server
+systemctl start rke2-server
+
+# 4. Verify cluster state
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+kubectl get nodes
+kubectl get pods -A
+
+# 5. Rejoin other control plane nodes
+# On each additional server:
+# - Remove /var/lib/rancher/rke2/server/db/
+# - Start rke2-server (will rejoin cluster)
+
+# 6. Restart worker nodes
+systemctl restart rke2-agent
+```
+
+**Cluster Backup Checklist:**
+
+```bash
+# 1. etcd snapshots (automatic)
+# 2. Application data (PVs) - use Longhorn backups
+# 3. Cluster configuration
+#    - /etc/rancher/rke2/config.yaml
+#    - Certificates (auto-regenerated, but backup for reference)
+# 4. Critical manifests
+#    - Custom CRDs
+#    - Namespaces
+#    - ConfigMaps/Secrets (encrypted)
+#    - RBAC policies
+
+# Backup all manifests
+kubectl get all --all-namespaces -o yaml > cluster-backup.yaml
+kubectl get crd -o yaml > crd-backup.yaml
+kubectl get configmap --all-namespaces -o yaml > configmaps-backup.yaml
+
+# Use Velero for comprehensive backup/restore
+# (backs up etcd + PVs + manifests)
+```
+
+### Certificate Management
+
+**RKE2 Certificates:**
+
+RKE2 automatically generates and manages certificates:
+
+```bash
+# Certificate locations
+/var/lib/rancher/rke2/server/tls/
+
+# Key certificates:
+# - server-ca.crt: Server CA (signs server certs)
+# - client-ca.crt: Client CA (signs client certs)
+# - request-header-ca.crt: API aggregation
+# - etcd/server-ca.crt: etcd CA
+# - dynamic-cert.json: Serving certificate
+
+# View certificate expiry
+for cert in /var/lib/rancher/rke2/server/tls/*.crt; do
+  echo "=== $cert ==="
+  openssl x509 -in $cert -noout -enddate
+done
+
+# Certificate rotation (automatic)
+# RKE2 auto-rotates certificates 90 days before expiry
+
+# Manual certificate rotation (if needed)
+# 1. Stop rke2-server
+systemctl stop rke2-server
+
+# 2. Backup certificates
+cp -r /var/lib/rancher/rke2/server/tls /var/lib/rancher/rke2/server/tls.backup
+
+# 3. Remove certificates
+rm -rf /var/lib/rancher/rke2/server/tls
+
+# 4. Start rke2-server (regenerates certs)
+systemctl start rke2-server
+
+# 5. Update kubeconfig on other nodes
+# Copy /etc/rancher/rke2/rke2.yaml from server to clients
+```
+
+**Knowledge Check:**
+
+1. What happens if you skip a minor version during upgrade?
+2. How do you rollback a failed upgrade?
+3. Can you restore an etcd snapshot on a different cluster?
+4. How long are RKE2 certificates valid?
+5. What's the recommended etcd snapshot retention period?
+
+---
+
+## Troubleshooting Guide
+
+**Time: 1.5 hours**
+
+This is the most important section for a support engineer role. Focus on systematic diagnosis and root cause analysis.
+
+### Systematic Debugging Approach
+
+**The Debugging Workflow:**
+
+```
+1. IDENTIFY THE PROBLEM
+   What is not working? What is the expected behavior?
+   ↓
+2. GATHER INFORMATION
+   Logs, events, resource status, recent changes
+   ↓
+3. ISOLATE THE SCOPE
+   Is it cluster-wide, namespace-specific, or single resource?
+   ↓
+4. FORM HYPOTHESIS
+   Based on symptoms, what could be the cause?
+   ↓
+5. TEST HYPOTHESIS
+   Run diagnostic commands, check specific components
+   ↓
+6. APPLY FIX
+   Make targeted changes
+   ↓
+7. VERIFY RESOLUTION
+   Confirm problem is solved
+   ↓
+8. DOCUMENT
+   Record root cause and solution
+```
+
+**Essential Diagnostic Commands:**
+
+```bash
+# Cluster health
+kubectl get nodes
+kubectl get cs  # component status (deprecated but still useful)
+kubectl get pods -A | grep -v Running
+
+# Resource status
+kubectl get <resource> -n <namespace>
+kubectl describe <resource> <name> -n <namespace>
+kubectl logs <pod> -n <namespace>
+kubectl logs <pod> -n <namespace> --previous  # Previous container instance
+
+# Events (critical for debugging)
+kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+kubectl get events -A --sort-by='.lastTimestamp' | tail -20
+
+# Resource utilization
+kubectl top nodes
+kubectl top pods -A
+
+# Configuration
+kubectl get <resource> <name> -o yaml
+kubectl get <resource> <name> -o json | jq '.spec'
+
+# Network
+kubectl exec <pod> -- ping <target>
+kubectl exec <pod> -- nslookup <service>
+kubectl exec <pod> -- curl -v <url>
+
+# Container runtime (on node)
+crictl ps
+crictl logs <container-id>
+crictl inspect <container-id>
+
+# systemd logs
+journalctl -u rke2-server -f
+journalctl -u rke2-agent -f
+journalctl -u rke2-server --since "10 minutes ago"
+```
+
+### RKE2-Specific Issues
+
+**Issue: rke2-server won't start**
+
+```bash
+# Symptom
+systemctl status rke2-server
+# Output: Failed to start RKE2 server
+
+# Diagnosis
+journalctl -u rke2-server -n 100
+
+# Common causes:
+
+# 1. Port 6443 already in use
+netstat -tlnp | grep 6443
+# Fix: Kill conflicting process or change API server port
+
+# 2. etcd data corruption
+journalctl -u rke2-server | grep -i "etcd"
+# Fix: Restore from snapshot
+rm -rf /var/lib/rancher/rke2/server/db/
+rke2 server --cluster-reset-restore-path=/path/to/snapshot.db
+
+# 3. Certificate issues
+journalctl -u rke2-server | grep -i "certificate"
+# Fix: Regenerate certificates
+systemctl stop rke2-server
+rm -rf /var/lib/rancher/rke2/server/tls/
+systemctl start rke2-server
+
+# 4. Insufficient disk space
+df -h /var/lib/rancher/rke2
+# Fix: Free up space
+
+# 5. SELinux/AppArmor blocking
+journalctl -u rke2-server | grep -i "permission denied"
+# Check: getenforce (SELinux) or aa-status (AppArmor)
+# Fix: Adjust policies or temporarily disable for testing
+```
+
+**Issue: Node stuck in NotReady**
 
 ```bash
 # Check node status
 kubectl get nodes
-kubectl describe node <node>
+kubectl describe node <node-name>
 
-# Check kubelet logs
+# Common causes:
+
+# 1. kubelet not running
 ssh <node>
-journalctl -u kubelet -f
+systemctl status rke2-server  # or rke2-agent
+systemctl restart rke2-agent
+journalctl -u rke2-agent -f
 
-# Common causes and fixes:
+# 2. Network plugin issue
+kubectl get pods -n kube-system | grep canal
+kubectl logs -n kube-system <canal-pod>
+# Fix: Restart canal pod if necessary
 
-# 1. Disk pressure
-df -h
-# Clean up: docker system prune -a
+# 3. Disk pressure / Memory pressure
+kubectl describe node <node-name> | grep Conditions -A 10
+# Fix: Free up resources or evict pods
 
-# 2. Memory pressure
-free -h
-# Check for memory leaks: top
+# 4. CNI configuration missing
+ssh <node>
+ls -la /var/lib/rancher/rke2/agent/etc/cni/net.d/
+# Should have 10-canal.conflist or similar
+# Fix: Restart rke2-server/agent to regenerate
 
-# 3. Network issues
-# Test connectivity to API server
-curl -k https://<api-server>:6443
-
-# 4. Certificate issues
-# Check kubelet cert
-openssl x509 -in /var/lib/kubelet/pki/kubelet.crt -text -noout
-
-# Rotate if expired
-rke cert rotate --config cluster.yml --service kubelet
+# 5. Certificate expiry
+ssh <node>
+openssl x509 -in /var/lib/rancher/rke2/agent/client-kubelet.crt -noout -enddate
+# Fix: Restart rke2-agent to rotate certificates
 ```
 
-**High Node Load:**
+**Issue: Unable to join new node to cluster**
 
 ```bash
-# Check resource usage
-kubectl top node <node>
+# On new node
+systemctl status rke2-agent
+journalctl -u rke2-agent -f
 
-# Check which pods are using resources
+# Common causes:
+
+# 1. Wrong server URL or token
+cat /etc/rancher/rke2/config.yaml
+# Verify:
+# server: https://<server-ip>:9345
+# token: <correct-token>
+# Get token from server: cat /var/lib/rancher/rke2/server/node-token
+
+# 2. Firewall blocking port 9345
+telnet <server-ip> 9345
+# Fix: Open firewall
+# RKE2 required ports:
+# - 9345 (supervisor API)
+# - 6443 (Kubernetes API)
+# - 2379-2380 (etcd)
+# - 10250 (kubelet)
+# - 8472 (VXLAN)
+
+# 3. Server not running / unhealthy
+ssh <server>
+systemctl status rke2-server
+kubectl get nodes
+
+# 4. TLS certificate validation failed
+journalctl -u rke2-agent | grep -i "certificate"
+# Fix: Ensure clock synchronized (NTP)
+timedatectl status
+```
+
+### etcd Troubleshooting
+
+**Issue: etcd cluster unhealthy**
+
+```bash
+# Check etcd member health
+alias etcdctl='/var/lib/rancher/rke2/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt \
+  --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt \
+  --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key'
+
+etcdctl endpoint health --cluster
+etcdctl endpoint status --cluster -w table
+
+# Common issues:
+
+# 1. etcd member down
+# Status shows: unhealthy for member X
+# Fix: Restart rke2-server on that node
+ssh <node>
+systemctl restart rke2-server
+
+# 2. No leader elected
+# Cause: Network partition or >50% members down
+# Fix: Ensure majority (quorum) of members are running
+# For 3-node cluster: need 2 nodes up
+# For 5-node cluster: need 3 nodes up
+
+# 3. etcd database too large (>8GB)
+etcdctl endpoint status -w table | awk '{print $5}'
+# Fix: Compact and defragment
+REV=$(etcdctl endpoint status --write-out="json" | jq -r '.[0].Status.header.revision')
+etcdctl compact $REV
+etcdctl defrag --cluster
+
+# 4. Slow disk (performance degradation)
+etcdctl check perf
+# Output should show latency <10ms
+# Fix: Move etcd to faster disk (SSD required)
+```
+
+**Issue: etcd alarm NOSPACE**
+
+```bash
+# Check alarms
+etcdctl alarm list
+# Output: memberID:xxx alarm:NOSPACE
+
+# Cause: Database size exceeded quota (default 2GB, RKE2 uses 8GB)
+
+# Fix:
+# 1. Compact old revisions
+REV=$(etcdctl endpoint status --write-out="json" | jq -r '.[0].Status.header.revision')
+etcdctl compact $REV
+
+# 2. Defragment
+etcdctl defrag --cluster
+
+# 3. Disarm alarm
+etcdctl alarm disarm
+
+# 4. Verify
+etcdctl endpoint status -w table
+etcdctl alarm list  # Should be empty
+
+# Prevention:
+# - Enable auto-compaction (RKE2 does this by default)
+# - Monitor database size
+# - Limit object churn (don't create/delete resources rapidly)
+```
+
+**Issue: Restore etcd from backup**
+
+```bash
+# Scenario: etcd data corrupted, cluster unusable
+
+# 1. Stop ALL rke2-server instances
+ssh node-1 'systemctl stop rke2-server'
+ssh node-2 'systemctl stop rke2-server'
+ssh node-3 'systemctl stop rke2-server'
+
+# 2. On first server, restore from snapshot
+ssh node-1
+rke2 server \
+  --cluster-reset \
+  --cluster-reset-restore-path=/var/lib/rancher/rke2/server/db/snapshots/snapshot-2024-02-08.db
+
+# Wait for restore to complete (watch journalctl)
+
+# 3. Start first server
+systemctl start rke2-server
+
+# 4. Verify cluster is functional (single-node)
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+kubectl get nodes
+
+# 5. On other servers, remove etcd data and rejoin
+ssh node-2
+systemctl stop rke2-server
+rm -rf /var/lib/rancher/rke2/server/db/
+systemctl start rke2-server
+
+ssh node-3
+systemctl stop rke2-server
+rm -rf /var/lib/rancher/rke2/server/db/
+systemctl start rke2-server
+
+# 6. Verify all nodes are back
+kubectl get nodes
+etcdctl member list
+etcdctl endpoint health --cluster
+```
+
+### Networking Issues
+
+**Issue: Pod can't reach another pod**
+
+```bash
+# Test connectivity
+kubectl exec <source-pod> -- ping <target-pod-ip>
+kubectl exec <source-pod> -- curl <target-service>
+
+# Diagnosis steps:
+
+# 1. Check pods are running
+kubectl get pods -o wide
+
+# 2. Check network policies
+kubectl get networkpolicy -n <namespace>
+kubectl describe networkpolicy <policy-name>
+# Fix: Adjust policy to allow traffic
+
+# 3. Check CNI plugin (Canal)
+kubectl get pods -n kube-system -l k8s-app=canal
+kubectl logs -n kube-system <canal-pod> -c calico-node
+kubectl logs -n kube-system <canal-pod> -c kube-flannel
+
+# 4. Verify routing on nodes
+ssh <node>
+ip route | grep 10.42  # Pod CIDR
+# Should have routes to other nodes via flannel.1
+
+# 5. Check VXLAN interface
+ip -d link show flannel.1
+# Should be UP
+
+# 6. Test node-to-node connectivity
+ssh <node-1>
+ping <node-2-ip>
+
+# 7. Firewall rules
+iptables-save | grep <pod-ip>
+# CNI creates iptables rules for pods
+# Check for DROP rules
+
+# 8. CoreDNS (if using service name)
+kubectl exec <pod> -- nslookup kubernetes.default
+kubectl logs -n kube-system -l k8s-app=kube-dns
+```
+
+**Issue: Service not accessible**
+
+```bash
+# Check service
+kubectl get svc <service-name> -n <namespace>
+kubectl describe svc <service-name> -n <namespace>
+
+# Common issues:
+
+# 1. No endpoints (no pods match selector)
+kubectl get endpoints <service-name> -n <namespace>
+# Fix: Ensure pods have matching labels
+kubectl get pods -n <namespace> --show-labels
+
+# 2. Wrong port/targetPort
+kubectl describe svc <service-name>
+# Verify: port (service port) and targetPort (pod port) are correct
+
+# 3. Network policy blocking traffic
+kubectl get networkpolicy -n <namespace>
+
+# 4. kube-proxy issue
+ssh <node>
+journalctl -u rke2-agent | grep kube-proxy
+# Check iptables rules for service
+iptables-save | grep <service-name>
+
+# 5. Service type mismatch
+# ClusterIP: Only accessible within cluster
+# NodePort: Accessible on node IP:port
+# LoadBalancer: Requires cloud controller
+
+# Test from different contexts:
+# - Pod to service: kubectl exec <pod> -- curl <service>
+# - Node to service: ssh <node> && curl <service-ip>:<port>
+# - External to NodePort: curl <node-ip>:<nodePort>
+```
+
+**Issue: DNS resolution failing**
+
+```bash
+# Test DNS
+kubectl exec <pod> -- nslookup kubernetes.default
+kubectl exec <pod> -- nslookup <service>.<namespace>.svc.cluster.local
+
+# Diagnosis:
+
+# 1. Check CoreDNS pods
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+kubectl logs -n kube-system -l k8s-app=kube-dns
+
+# 2. CoreDNS service
+kubectl get svc -n kube-system kube-dns
+# Should be ClusterIP (usually 10.43.0.10)
+
+# 3. Pod DNS configuration
+kubectl exec <pod> -- cat /etc/resolv.conf
+# Should have:
+# nameserver 10.43.0.10
+# search <namespace>.svc.cluster.local svc.cluster.local cluster.local
+
+# 4. CoreDNS ConfigMap
+kubectl get configmap -n kube-system coredns -o yaml
+# Check for errors in Corefile
+
+# 5. Test DNS from node
+ssh <node>
+nslookup kubernetes.default.svc.cluster.local 10.43.0.10
+
+# 6. Restart CoreDNS
+kubectl rollout restart deployment -n kube-system coredns
+```
+
+### Storage Issues
+
+**Issue: Pod stuck in ContainerCreating (volume mount issue)**
+
+```bash
+# Check pod events
+kubectl describe pod <pod-name>
+
+# Common volume-related errors:
+
+# 1. "Unable to attach or mount volumes"
+# Causes:
+# - PVC not bound to PV
+# - Volume node affinity conflict
+# - CSI driver issue
+
+# Check PVC status
+kubectl get pvc -n <namespace>
+kubectl describe pvc <pvc-name>
+
+# For Longhorn:
+kubectl get volumes.longhorn.io -n longhorn-system
+kubectl describe volume.longhorn.io -n longhorn-system <volume-name>
+
+# 2. "Multi-Attach error"
+# Cause: Volume is ReadWriteOnce but pod scheduled on different node
+# Fix: Delete old pod or change to ReadWriteMany
+
+# 3. "Volume is already exclusively attached"
+# Cause: Previous pod still attached
+# Fix: Force delete old pod
+kubectl delete pod <old-pod> --force --grace-period=0
+
+# 4. Longhorn volume stuck in "Attaching"
+kubectl get volumes.longhorn.io -n longhorn-system
+# Check engine and replica status
+kubectl get engines.longhorn.io -n longhorn-system
+kubectl get replicas.longhorn.io -n longhorn-system
+
+# Fix: Restart Longhorn instance-manager on node
+kubectl delete pod -n longhorn-system <instance-manager-pod>
+```
+
+**Issue: Longhorn volume degraded**
+
+```bash
+# Check volume health
+kubectl get volumes.longhorn.io -n longhorn-system
+# State: healthy, degraded, faulted
+
+# Degraded: Some replicas unavailable
+kubectl describe volume.longhorn.io -n longhorn-system <volume-name>
+
+# Check replicas
+kubectl get replicas.longhorn.io -n longhorn-system | grep <volume-name>
+
+# Common causes:
+
+# 1. Node down
+kubectl get nodes
+# Longhorn will auto-rebuild replica on another node
+
+# 2. Disk full on node
+kubectl get nodes.longhorn.io -n longhorn-system -o yaml | grep -A5 diskStatus
+# Fix: Free up space or add disk
+
+# 3. Replica rebuilding (slow)
+kubectl logs -n longhorn-system <instance-manager-pod>
+# Wait for rebuild to complete
+
+# 4. Network issues between replicas
+# Check node connectivity
+ssh <node-1> && ping <node-2>
+
+# Force replica rebuild
+# Via Longhorn UI: Volume → Actions → Salvage
+```
+
+**Issue: PVC stuck in Pending**
+
+```bash
+# Check PVC
+kubectl get pvc -n <namespace>
+kubectl describe pvc <pvc-name>
+
+# Common causes:
+
+# 1. No StorageClass
+kubectl get sc
+# Fix: Create StorageClass or specify in PVC
+
+# 2. No available PV (static provisioning)
+kubectl get pv
+# Fix: Create matching PV
+
+# 3. Dynamic provisioning failed
+kubectl get events -n <namespace> | grep <pvc-name>
+# Check CSI driver logs
+kubectl logs -n longhorn-system <csi-provisioner-pod>
+
+# 4. Insufficient storage in cluster
+# For Longhorn:
+kubectl get nodes.longhorn.io -n longhorn-system -o yaml
+# Check: allocatable storage vs. requested
+
+# 5. Volume binding mode WaitForFirstConsumer
+kubectl get sc <storage-class> -o yaml | grep volumeBindingMode
+# PVC waits until pod is scheduled
+# Fix: Create pod to trigger binding
+```
+
+### Node Problems
+
+**Issue: Node out of resources**
+
+```bash
+# Check node conditions
+kubectl describe node <node-name> | grep -A10 Conditions
+
+# Conditions to watch:
+# - MemoryPressure: True (low memory)
+# - DiskPressure: True (low disk)
+# - PIDPressure: True (too many processes)
+
+# Check resource usage
+kubectl top node <node-name>
 kubectl top pods -A --sort-by=memory
 kubectl top pods -A --sort-by=cpu
 
-# SSH to node and investigate
+# SSH to node
 ssh <node>
 
-# Check process list
-top
-# Or: htop
+# Memory
+free -h
+# Fix: Evict pods or add memory
 
-# Check disk I/O
-iostat -x 1
-# Or: iotop
+# Disk
+df -h
+# Common culprits:
+# - /var/lib/rancher/rke2/agent/containerd (images)
+# - /var/log (logs)
+# - /var/lib/longhorn (storage)
 
-# Check network
-iftop
+# Clean up images
+crictl images
+crictl rmi <image-id>
 
-# Common fixes:
-# 1. Scale down resource-heavy pods
-# 2. Add resource limits
-# 3. Add more nodes
-# 4. Investigate application issues
+# Clean up logs
+journalctl --vacuum-time=7d
+find /var/log -type f -name "*.log" -mtime +7 -delete
+
+# PIDs
+ps aux | wc -l
+# Check kubelet max-pods setting
 ```
 
-**Pod Eviction:**
+**Issue: Node taints preventing scheduling**
 
 ```bash
-# Symptom: Pods being evicted
+# Check node taints
+kubectl describe node <node-name> | grep Taints
 
-kubectl get pods -A | grep Evicted
+# Common taints:
+# - node-role.kubernetes.io/control-plane:NoSchedule (control nodes)
+# - node.kubernetes.io/not-ready:NoSchedule (node not ready)
+# - node.kubernetes.io/unreachable:NoExecute (node down)
+# - node.kubernetes.io/disk-pressure:NoSchedule (disk full)
 
-# Check events
-kubectl get events -A --sort-by='.lastTimestamp' | grep -i evict
+# Remove taint
+kubectl taint nodes <node-name> <taint-key>:<effect>-
 
-# Causes:
-# - Node disk pressure
-# - Node memory pressure
-# - Node PID pressure
+# Example: Allow scheduling on control plane
+kubectl taint nodes node-1 node-role.kubernetes.io/control-plane:NoSchedule-
 
-# Check node conditions
-kubectl describe node <node> | grep -A5 Conditions
-
-# Fix disk pressure
-ssh <node>
-docker system prune -a
-# Or add more disk
-
-# Fix memory pressure
-# Add resource limits to pods
-# Or add more memory to nodes
-
-# Clean up evicted pods
-kubectl get pods -A | grep Evicted | awk '{print $2 " -n " $1}' | xargs -L1 kubectl delete pod
+# Add toleration to pod (instead of removing taint)
+spec:
+  tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
 ```
 
-#### Final Knowledge Checklist
+### Upgrade Failures
 
-- [ ] **RKE Upgrade**: Can you perform a zero-downtime upgrade?
-- [ ] **etcd Troubleshooting**: How do you diagnose etcd issues?
-- [ ] **Node Troubleshooting**: What are the top 5 causes of NotReady nodes?
-- [ ] **Network Debugging**: How do you troubleshoot pod-to-pod communication?
-- [ ] **Storage Issues**: How do you diagnose PVC not binding?
-- [ ] **Resource Pressure**: How do you handle node disk/memory pressure?
-- [ ] **Certificate Rotation**: When and how do you rotate certificates?
-- [ ] **Backup/Restore**: Can you restore a cluster from etcd backup?
+**Issue: Node stuck during upgrade**
+
+```bash
+# Check upgrade plan status
+kubectl get plans -n system-upgrade
+kubectl describe plan <plan-name> -n system-upgrade
+
+# Check upgrade jobs
+kubectl get jobs -n system-upgrade
+kubectl logs -n system-upgrade job/<upgrade-job>
+
+# Common issues:
+
+# 1. Pod eviction failed (PDB preventing drain)
+kubectl get pdb -A
+# Fix: Temporarily adjust PodDisruptionBudget
+
+# 2. Node drain timeout
+# Fix: Force drain
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data --force --grace-period=0
+
+# 3. New version compatibility issue
+journalctl -u rke2-server -n 100
+# Fix: Rollback
+systemctl stop rke2-server
+# Install previous version
+curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=<old-version> sh -
+systemctl start rke2-server
+```
+
+**Issue: Post-upgrade API server errors**
+
+```bash
+# API server won't start after upgrade
+journalctl -u rke2-server | grep apiserver
+
+# Common causes:
+
+# 1. Admission webhook failing
+# Symptom: "failed calling webhook"
+# Fix: Delete webhook temporarily
+kubectl delete validatingwebhookconfig <webhook-name>
+kubectl delete mutatingwebhookconfig <webhook-name>
+
+# 2. API version removed
+# Symptom: "no matches for kind X in version Y"
+# Fix: Update manifests to new API version
+# Example: apps/v1beta1 → apps/v1
+
+# 3. Feature gate changed
+# Check release notes for deprecated features
+# Fix: Update manifests or re-enable feature gate
+# kube-apiserver-arg:
+#   - "feature-gates=OldFeature=true"
+
+# 4. etcd migration failed
+journalctl -u rke2-server | grep "etcd"
+# Fix: Restore from pre-upgrade snapshot
+```
+
+**Knowledge Check:**
+
+1. What's the first thing you check when a pod won't start?
+2. How do you determine if a networking issue is CNI or application-level?
+3. What's the difference between `kubectl logs` and `crictl logs`?
+4. How do you troubleshoot an etcd cluster that has lost quorum?
+5. What steps would you take for a complete cluster failure (all control planes down)?
 
 ---
 
-## Day 3 - Final Prep Checklist
+## Interview Questions
 
-**Night Before Second Interview:**
-- [ ] Review RKE1 vs RKE2 differences - explain architecture
-- [ ] Practice explaining API server request flow
-- [ ] Walk through etcd backup and restore process
-- [ ] Explain scheduler filtering and scoring
-- [ ] Design a simple CRD + controller
-- [ ] Explain Canal (Calico + Flannel) architecture
-- [ ] Demonstrate network policy creation
-- [ ] Explain Longhorn replication and backup
-- [ ] Practice troubleshooting scenarios
-- [ ] Review common RKE issues and fixes
+**RKE2 Architecture:**
 
-**Interview Day:**
-- [ ] Be ready to whiteboard architectures
-- [ ] Have examples of issues you've debugged
-- [ ] Prepare questions about their RKE environment
-- [ ] Be ready for scenario-based questions
-- [ ] Focus on "how you would troubleshoot" approach
+1. **Q: Explain the difference between RKE2 and vanilla Kubernetes.**
+   - A: RKE2 packages K8s components into a single binary (rke2-server/agent) managed by systemd, includes embedded etcd, is CIS-hardened by default, uses containerd only, and provides security features out-of-the-box (PSS, network policies).
 
-**Key Talking Points:**
-- Emphasize hands-on experience with Kubernetes internals
-- Discuss production troubleshooting methodology
-- Show understanding of RKE vs cloud-managed differences
-- Demonstrate systematic debugging approach
-- Mention monitoring and observability practices
-- Discuss high availability and disaster recovery
+2. **Q: How does RKE2 achieve high availability?**
+   - A: Multiple server nodes (3 or 5) each run embedded etcd forming a cluster. API requests are load-balanced across servers. etcd uses Raft consensus requiring majority quorum. If one server fails, others continue operating.
 
+3. **Q: Where is etcd data stored in RKE2?**
+   - A: `/var/lib/rancher/rke2/server/db/etcd/` - part of the rke2-server process, not a separate container.
+
+4. **Q: What happens if rke2-server crashes on one of three control plane nodes?**
+   - A: Cluster continues operating. etcd maintains quorum (2/3). API requests route to remaining servers. Pods on that node eventually get evicted and rescheduled. Restart the service to restore full redundancy.
+
+5. **Q: How do you add a new worker node to an RKE2 cluster?**
+   - A: Install rke2-agent, configure `/etc/rancher/rke2/config.yaml` with server URL and token, start service: `systemctl enable --now rke2-agent`. Node joins automatically.
+
+**Kubernetes Internals:**
+
+6. **Q: Trace the flow when you run `kubectl create deployment nginx --replicas=3`.**
+   - A: kubectl → API server (authn/authz/admission/validate) → etcd write → deployment controller watches → creates ReplicaSet → RS controller creates 3 Pods → scheduler assigns nodes → kubelets start containers → status updated.
+
+7. **Q: What's the role of the controller manager?**
+   - A: Runs control loops (deployment, RS, node, service controllers) that watch cluster state and reconcile to desired state. Each controller continuously compares current vs. desired and takes action.
+
+8. **Q: How does the scheduler decide which node to place a pod on?**
+   - A: Filtering phase eliminates incompatible nodes (resources, taints, affinity). Scoring phase ranks remaining nodes (0-100) by resource balance, affinity preferences, etc. Highest score wins. Binds pod to node.
+
+9. **Q: What happens if etcd goes down?**
+   - A: API server can't read/write cluster state → no new operations (creates, updates, deletes). Existing workloads continue running (kubelets use last known state). Cluster is read-only. CRITICAL to restore etcd ASAP.
+
+10. **Q: Explain how controllers use the watch mechanism.**
+    - A: Controllers establish long-lived watch streams to API server for specific resource types. API server sends events (ADDED/MODIFIED/DELETED) when resources change. Efficient - no polling, immediate notification.
+
+**Networking:**
+
+11. **Q: How does pod-to-pod communication work across nodes in Canal?**
+    - A: Flannel creates VXLAN overlay. Packet leaves pod → cbr0 bridge → encapsulated by flannel.1 interface → sent over physical network to destination node → decapsulated → delivered to target pod.
+
+12. **Q: What's the difference between Calico and Flannel in Canal?**
+    - A: Flannel provides simple L3 overlay networking (VXLAN). Calico provides network policy enforcement via iptables rules. Canal combines both: Flannel for connectivity, Calico for security.
+
+13. **Q: Explain how Network Policies work.**
+    - A: Label-based firewall rules. Select pods, define allowed ingress/egress. Calico translates policies into iptables rules on each node. Default: allow all. With policies: deny by default, allow explicitly defined.
+
+14. **Q: How would you troubleshoot "pod A can't reach pod B"?**
+    - A: Check both pods running, verify IPs, test connectivity (ping/curl), check network policies, verify CNI pods healthy, check node routing (ip route), test node-to-node connectivity, check DNS if using service names.
+
+15. **Q: What's the purpose of the flannel.1 interface?**
+    - A: VXLAN tunnel endpoint. Encapsulates pod traffic for cross-node communication. Creates overlay network so pods have L3 connectivity regardless of underlying network topology.
+
+**Storage:**
+
+16. **Q: Explain Longhorn's architecture.**
+    - A: Distributed block storage. Each volume has multiple replicas (default 3) on different nodes. Engine pod handles I/O and replicates writes. If node fails, replicas on other nodes maintain availability. Auto-rebuilding.
+
+17. **Q: What's the difference between a snapshot and a backup in Longhorn?**
+    - A: Snapshot: point-in-time copy stored locally on replica nodes, fast, for quick recovery. Backup: incremental copy to remote S3/NFS, slower, for DR and long-term retention.
+
+18. **Q: How does CSI differ from legacy volume plugins?**
+    - A: CSI is out-of-tree (separate from K8s core), standardized interface, allows third-party storage vendors to develop plugins independently. Legacy: in-tree, coupled to K8s release cycle, limited.
+
+19. **Q: What happens when a Longhorn volume becomes degraded?**
+    - A: Some replicas unavailable (node down, disk full). Volume still accessible via remaining replicas. Longhorn auto-rebuilds missing replicas on healthy nodes. Temporary reduced redundancy.
+
+20. **Q: How would you migrate volumes from one RKE2 cluster to another?**
+    - A: Longhorn backups to S3. Configure new cluster's Longhorn with same S3 target. Backups visible in new cluster's UI. Restore backup → creates volume with data. Attach to pods in new cluster.
+
+**Troubleshooting:**
+
+21. **Q: Pod stuck in Pending. How do you diagnose?**
+    - A: `kubectl describe pod` → check events. Common: insufficient resources, unbound PVC, node selector mismatch, taints, scheduling constraints. Check `kubectl get nodes`, `kubectl get pvc`, resource requests.
+
+22. **Q: Node shows NotReady. What's your approach?**
+    - A: Check `kubectl describe node` conditions. SSH to node. Check `systemctl status rke2-agent/server`, `journalctl`, disk/memory, CNI pods, network connectivity. Restart service if needed.
+
+23. **Q: How do you recover from etcd data corruption?**
+    - A: Stop all rke2-server instances. On first server: `rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot>`. Start first server. Verify. On other servers: remove `/var/lib/rancher/rke2/server/db/`, restart to rejoin.
+
+24. **Q: Service not accessible from pods. Debug steps?**
+    - A: Check service exists, has endpoints (`kubectl get endpoints`), labels match pods, test from pod (`curl <service>`), verify network policies, check kube-proxy logs, iptables rules for service.
+
+25. **Q: Longhorn volume won't attach to pod. What do you check?**
+    - A: Check volume state (`kubectl get volumes.longhorn.io`), node has space, engine/replica pods running, previous pod force-deleted, multi-attach error (RWO conflict), instance-manager healthy.
+
+**Operations:**
+
+26. **Q: Describe the RKE2 upgrade process.**
+    - A: Backup etcd. Upgrade control plane nodes one at a time (cordon, drain, stop service, install new version, start, uncordon). Then upgrade workers. Use system-upgrade-controller for automation.
+
+27. **Q: What's the recommended etcd backup strategy?**
+    - A: Automatic snapshots every 12 hours, retention 5+, backup to S3 for DR, test restores regularly, backup before major changes (upgrades, large deployments).
+
+28. **Q: How do RKE2 certificates work?**
+    - A: Auto-generated on first start, stored in `/var/lib/rancher/rke2/server/tls/`, auto-rotated 90 days before expiry. Separate CAs for server, client, etcd. kubelet certificates signed and rotated.
+
+29. **Q: What ports does RKE2 require to be open?**
+    - A: 6443 (API), 9345 (supervisor), 2379-2380 (etcd), 10250 (kubelet), 8472 (VXLAN), 443/80 (ingress). Control plane needs all, workers need subset.
+
+30. **Q: How would you troubleshoot slow API responses?**
+    - A: Check etcd performance (`etcdctl check perf`), disk I/O, etcd database size, API server logs, resource utilization (CPU/memory), network latency, watch stream count, large list operations.
+
+---
+
+## Quick Reference
+
+**RKE2 Essentials:**
+
+```bash
+# Service management
+systemctl status rke2-server
+systemctl restart rke2-server
+journalctl -u rke2-server -f
+
+# Config
+/etc/rancher/rke2/config.yaml
+/etc/rancher/rke2/rke2.yaml  # kubeconfig
+
+# Data locations
+/var/lib/rancher/rke2/server/
+/var/lib/rancher/rke2/agent/
+/var/lib/rancher/rke2/server/db/etcd/
+
+# etcd
+etcdctl endpoint health --cluster
+etcdctl member list
+rke2 etcd-snapshot save
+```
+
+**Troubleshooting Commands:**
+
+```bash
+# Cluster health
+kubectl get nodes
+kubectl get pods -A | grep -v Running
+kubectl get events -A --sort-by='.lastTimestamp' | tail -20
+
+# Pod debugging
+kubectl describe pod <pod>
+kubectl logs <pod> --previous
+kubectl exec <pod> -- sh
+
+# Network
+kubectl exec <pod> -- ping <ip>
+kubectl exec <pod> -- nslookup <service>
+
+# Storage
+kubectl get pvc
+kubectl get volumes.longhorn.io -n longhorn-system
+crictl ps | grep <volume>
+
+# Node debugging
+ssh <node>
+crictl ps
+crictl logs <container>
+df -h
+free -h
+journalctl -u rke2-agent
+```
+
+**Key File Locations:**
+
+```bash
+# RKE2
+/etc/rancher/rke2/config.yaml           # Configuration
+/var/lib/rancher/rke2/                  # Data directory
+/var/lib/rancher/rke2/server/tls/       # Certificates
+/etc/rancher/rke2/rke2.yaml             # Kubeconfig
+
+# Logs
+journalctl -u rke2-server
+journalctl -u rke2-agent
+
+# CNI
+/opt/cni/bin/                           # CNI binaries
+/var/lib/rancher/rke2/agent/etc/cni/net.d/  # CNI config
+
+# Container runtime
+/var/lib/rancher/rke2/agent/containerd/
+crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock
+```
+
+**Port Reference:**
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 6443 | TCP | Kubernetes API |
+| 9345 | TCP | RKE2 supervisor API |
+| 2379-2380 | TCP | etcd client/peer |
+| 10250 | TCP | Kubelet API |
+| 10251 | TCP | kube-scheduler (localhost) |
+| 10252 | TCP | kube-controller-manager (localhost) |
+| 8472 | UDP | Flannel VXLAN |
+| 4789 | UDP | Calico VXLAN (if enabled) |
+| 179 | TCP | Calico BGP (if enabled) |
+
+**Common Issues & Solutions:**
+
+| Symptom | Likely Cause | Quick Fix |
+|---------|--------------|-----------|
+| Pod Pending | Resources, PVC, scheduling | `kubectl describe pod` |
+| Node NotReady | kubelet, CNI, resources | `systemctl restart rke2-agent` |
+| Can't reach pod | Network policy, CNI | Check policies, CNI pods |
+| Volume won't attach | Longhorn, node down | Check volume.longhorn.io |
+| etcd unhealthy | Member down, disk | Restart rke2-server, check disk |
+| API slow | etcd performance, disk | `etcdctl check perf`, defrag |
+| DNS failing | CoreDNS down | Restart CoreDNS deployment |
+| Can't join node | Token, firewall, server | Verify config, ports, server status |
+
+---
+
+**Final Tips for Interview:**
+
+1. **Don't just memorize** - understand how components interact
+2. **Think out loud** - explain your troubleshooting thought process
+3. **Ask clarifying questions** - "Is this affecting all pods or just one namespace?"
+4. **Draw diagrams** - visual explanations show deeper understanding
+5. **Mention real-world trade-offs** - "etcd requires fast disks, but SSDs cost more"
+6. **Show operational awareness** - "Before making this change, I'd backup etcd"
+7. **Admit what you don't know** - "I haven't worked with feature X, but here's how I'd learn it"
+
+**Good luck with your interview!** 🚀
