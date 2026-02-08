@@ -458,10 +458,19 @@ kubectl get endpoints -n kube-system
 **Knowledge Check:**
 
 1. What happens if rke2-server is stopped on a 3-node control plane?
+   > **A:** The cluster continues operating with the remaining 2 nodes maintaining etcd quorum (2/3 majority). API requests route to the healthy servers, but you've lost redundancy and should restart the failed server to restore full HA.
+
 2. Where is etcd data stored in RKE2?
+   > **A:** `/var/lib/rancher/rke2/server/db/etcd/` - etcd runs embedded within the rke2-server process, not as a separate container.
+
 3. How do you change the CNI plugin after installation?
+   > **A:** Add `cni: <plugin-name>` to `/etc/rancher/rke2/config.yaml` and restart, but this is risky in production. It's safer to provision a new cluster with the desired CNI and migrate workloads.
+
 4. What's the difference between `rke2 server` and `rke2 agent`?
+   > **A:** `rke2 server` runs control plane components (API server, scheduler, controller-manager, embedded etcd) plus kubelet. `rke2 agent` runs only kubelet and kube-proxy for worker nodes.
+
 5. How do you add a new server to an existing HA cluster?
+   > **A:** Install rke2-server, create `/etc/rancher/rke2/config.yaml` with `server: https://<existing-server>:9345` and the cluster token, then start the service. It joins the etcd cluster automatically.
 
 ---
 
@@ -1094,10 +1103,19 @@ kubectl get events -A | grep Node
 **Knowledge Check:**
 
 1. What happens when API server restarts in a 3-node control plane?
+   > **A:** Clients (kubectl, controllers) automatically fail over to the other 2 API servers. Cluster operations continue uninterrupted because etcd quorum is maintained and load balancing distributes requests.
+
 2. If etcd is down, can you still read cluster state via kubectl?
+   > **A:** No, kubectl reads fail because the API server cannot query etcd. However, existing pods continue running since kubelets operate on last known state, but no new operations (create/update/delete) are possible.
+
 3. What's the difference between Deployment and ReplicaSet controllers?
+   > **A:** Deployment controller manages rolling updates and rollbacks by creating/updating ReplicaSets. ReplicaSet controller ensures the desired number of pod replicas are running by creating or deleting pods.
+
 4. Why does scheduler only assign pods to nodes, not start them?
+   > **A:** Separation of concerns - scheduler handles placement decisions (which node is best), while kubelets handle execution (starting containers). This decouples scheduling logic from container runtime operations.
+
 5. What happens if a node becomes unreachable? (Trace through the components)
+   > **A:** Kubelet stops sending heartbeats → node controller marks node NotReady after grace period → pod eviction controller waits (default 5min) → pods marked for deletion → scheduler places them on healthy nodes → new kubelets start replacement pods.
 
 ---
 
@@ -1595,13 +1613,28 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 **Knowledge Check:**
 
 1. What's the difference between a CRD and a controller?
+   > **A:** A CRD defines a new resource type (schema) and stores instances in etcd. A controller contains the business logic that watches CRD instances and reconciles them to desired state (takes action).
+
 2. Can you use a CRD without a controller?
+   > **A:** Yes, CRDs can store custom data in etcd without controllers, but they're just passive data storage. Controllers provide the automation and reconciliation logic that makes them useful.
+
 3. How do controllers avoid conflicts when multiple instances are running?
+   > **A:** Leader election - controllers use a Lease resource to elect a single active leader. Only the leader reconciles resources; others watch and wait to take over if the leader fails.
+
 4. What happens if a controller crashes - is state lost?
+   > **A:** No, state is preserved in etcd. When the controller restarts, it re-establishes watches, reads current state from etcd, and resumes reconciliation from where it left off.
+
 5. Name three operators used in production environments.
+   > **A:** Prometheus Operator (monitoring), cert-manager (certificate management), and Postgres Operator (database management).
+
 6. How would you safely deprecate a CRD field in production?
+   > **A:** Add the new field first, support both old and new fields simultaneously, mark old field as deprecated with API warnings, provide migration period (3+ releases), only remove after all users migrate.
+
 7. What's the purpose of a conversion webhook?
+   > **A:** It automatically converts CRD instances between different API versions, enabling bidirectional conversion so clients can use any served version while storage uses one canonical version.
+
 8. Can you serve multiple API versions simultaneously?
+   > **A:** Yes, set `served: true` for multiple versions. Only one can have `storage: true` (the canonical version in etcd), and the API server handles conversion between versions.
 
 ---
 
@@ -1845,9 +1878,16 @@ clusters = client.list_clusters()
 **Knowledge Check:**
 
 1. What's the difference between Rancher and RKE2?
+   > **A:** RKE2 is a Kubernetes distribution (secure K8s implementation). Rancher (v2.13.2 as of Feb 2026) is a multi-cluster management platform that can manage multiple RKE2, EKS, AKS, and GKE clusters through a unified UI and API.
+
 2. How does Rancher extend the Kubernetes API?
+   > **A:** Rancher adds custom CRDs (clusters.management.cattle.io, projects.management.cattle.io, users.management.cattle.io) and runs cattle-cluster-agent in managed clusters to provide multi-cluster management capabilities beyond standard Kubernetes.
+
 3. What is a Rancher Project and how does it differ from a namespace?
+   > **A:** A Project is a Rancher concept that groups multiple namespaces together for unified RBAC, resource quotas, and network policies. Namespaces are Kubernetes primitives that isolate resources within a single cluster.
+
 4. How would you automate cluster provisioning via Rancher API?
+   > **A:** Create a Cluster resource YAML with `apiVersion: provisioning.cattle.io/v1` specifying kubernetesVersion, rkeConfig, and machine pools, then apply it via `kubectl apply` or POST to Rancher's REST API endpoint.
 
 ---
 
@@ -2164,10 +2204,19 @@ kubectl get networkpolicies --all-namespaces
 **Knowledge Check:**
 
 1. What's the difference between Flannel and Calico in Canal?
+   > **A:** Flannel provides the overlay network (VXLAN) for pod-to-pod connectivity across nodes. Calico provides network policy enforcement via iptables rules for security and traffic control.
+
 2. How do pods on different nodes communicate?
+   > **A:** Packets leave the pod, go to the cbr0 bridge, get encapsulated by the flannel.1 VXLAN interface, travel over the physical network to the destination node, get decapsulated, and are delivered to the target pod.
+
 3. What happens if you delete a Canal pod?
+   > **A:** The Canal DaemonSet immediately recreates it. During the brief restart, existing connections continue (CNI is already configured), but new pods on that node can't get network configuration until the Canal pod is healthy again.
+
 4. Do Network Policies apply to services or pods?
+   > **A:** Network Policies apply to pods directly using label selectors. They control traffic between pods, not services (services are just routing abstractions).
+
 5. How would you troubleshoot a pod that can't reach another pod?
+   > **A:** Verify both pods are running, test connectivity (ping/curl), check network policies for denials, verify Canal/CNI pods are healthy, check node routing tables, test node-to-node connectivity, and examine CNI logs.
 
 ---
 
@@ -2504,10 +2553,19 @@ kubectl logs -n longhorn-system <longhorn-manager-pod> | grep backup
 **Knowledge Check:**
 
 1. How many replicas does Longhorn create by default?
+   > **A:** 3 replicas (configurable per StorageClass or volume). This provides high availability - a volume can tolerate 2 node failures and still maintain data.
+
 2. What happens if a node with a replica goes down?
+   > **A:** The volume remains accessible through replicas on other nodes. Longhorn marks the volume as degraded and automatically rebuilds the missing replica on a healthy node to restore full redundancy.
+
 3. Can you resize a Longhorn volume?
+   > **A:** Yes, Longhorn supports online volume expansion. Edit the PVC size, and Longhorn automatically expands the volume and all replicas without downtime.
+
 4. What's the difference between a snapshot and a backup?
+   > **A:** Snapshots are point-in-time copies stored locally on replica nodes (fast, for quick recovery). Backups are incremental copies stored remotely on S3/NFS (slower, for disaster recovery and long-term retention).
+
 5. How would you migrate volumes from one cluster to another?
+   > **A:** Create Longhorn backups to S3, configure the new cluster's Longhorn with the same S3 backup target, restore the backups in the new cluster to create volumes with the data, then attach to pods.
 
 ---
 
@@ -2765,10 +2823,19 @@ If your control plane is v1.34, you can have:
 **Knowledge Check:**
 
 1. Can you upgrade from RKE2 v1.32 to v1.35 directly?
+   > **A:** No, never skip minor versions. You must upgrade sequentially: v1.32 → v1.33 → v1.34 → v1.35, ensuring compatibility and proper etcd migrations at each step.
+
 2. What happens if you use a deprecated API after it's removed?
+   > **A:** API requests fail with 404 Not Found errors. Manifests using removed APIs cannot be applied, and existing resources using deprecated APIs may fail to update.
+
 3. Why is the etcd 3.5 → 3.6 upgrade path critical when moving to RKE2 v1.34?
+   > **A:** etcd 3.6 has no safe upgrade path from etcd versions before 3.5.26. You must be on etcd 3.5.26 first (via RKE2 v1.32/v1.33) before upgrading to RKE2 v1.34 to avoid zombie members and quorum loss.
+
 4. What's the maximum version skew allowed between control plane and workers?
+   > **A:** Workers can be up to 2 minor versions behind the control plane. For example, if control plane is v1.34, workers can be v1.34, v1.33, or v1.32.
+
 5. Name three things you must do before upgrading a production cluster.
+   > **A:** Take an etcd snapshot backup, test the upgrade in staging environment, and review release notes for API deprecations and breaking changes.
 
 ### Upgrades
 
@@ -3014,10 +3081,19 @@ systemctl start rke2-server
 **Knowledge Check:**
 
 1. What happens if you skip a minor version during upgrade?
+   > **A:** Risk of incompatibility issues, API version skew problems, and failed etcd migrations (especially the critical 3.5.26 → 3.6 upgrade). Always upgrade one minor version at a time.
+
 2. How do you rollback a failed upgrade?
+   > **A:** Stop all rke2-server instances, restore from etcd snapshot using `rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot>` on the first server, then rejoin other servers by removing their etcd data and restarting.
+
 3. Can you restore an etcd snapshot on a different cluster?
+   > **A:** Technically yes, but it's not recommended for production use. The snapshot contains cluster-specific data (node registrations, certificates) that won't match the new cluster, causing operational issues.
+
 4. How long are RKE2 certificates valid?
+   > **A:** By default, RKE2 certificates are valid for 365 days (1 year). RKE2 automatically rotates certificates when restarting services before expiration.
+
 5. What's the recommended etcd snapshot retention period?
+   > **A:** Keep at least 5-7 snapshots (configurable via `etcd-snapshot-retention`), with daily snapshots retained for 7-14 days depending on RPO requirements and storage capacity.
 
 ---
 
@@ -3984,10 +4060,19 @@ journalctl -u rke2-server | grep "etcd"
 **Knowledge Check:**
 
 1. What's the first thing you check when a pod won't start?
+   > **A:** Run `kubectl describe pod <name>` to check events section for errors like image pull failures, insufficient resources, unbound PVCs, scheduling constraints, or failed health checks.
+
 2. How do you determine if a networking issue is CNI or application-level?
+   > **A:** Check if the pod has an IP address and CNI pods are healthy. Test basic connectivity (ping cluster DNS). If CNI is working but app fails, it's application-level (wrong service name, network policies, app misconfiguration).
+
 3. What's the difference between `kubectl logs` and `crictl logs`?
+   > **A:** `kubectl logs` queries the API server for logs from running/terminated pods. `crictl logs` directly queries the container runtime on the node, useful when the API server is unavailable or for debugging kubelet issues.
+
 4. How do you troubleshoot an etcd cluster that has lost quorum?
+   > **A:** Check etcd member list and health, verify at least (n/2)+1 members are healthy. If quorum is lost, restore from the most recent etcd snapshot using `rke2 server --cluster-reset --cluster-reset-restore-path`.
+
 5. What steps would you take for a complete cluster failure (all control planes down)?
+   > **A:** Restore from etcd snapshot on first server with `--cluster-reset`, verify it starts successfully, remove etcd data on remaining servers (`/var/lib/rancher/rke2/server/db/`), restart them to rejoin the cluster, verify all nodes healthy.
 
 ---
 
