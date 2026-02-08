@@ -12,7 +12,7 @@
 2. [RKE2 Architecture](#rke2-architecture)
    - [Why RKE2](#why-rke2)
    - [Architecture Overview](#architecture-overview)
-   - [Installation & Configuration](#installation--configuration)
+   - [Installation & Configuration](#installation-configuration)
    - [systemd Service Model](#systemd-service-model)
 3. [Kubernetes Control Plane Internals](#kubernetes-control-plane-internals)
    - [API Server Deep Dive](#api-server-deep-dive)
@@ -20,32 +20,32 @@
    - [etcd Operations](#etcd-operations)
    - [Scheduler Internals](#scheduler-internals)
    - [Controller Manager](#controller-manager)
-4. [CRDs & Controllers](#crds--controllers)
+4. [CRDs & Controllers](#crds-controllers)
    - [Custom Resource Definitions](#custom-resource-definitions)
    - [Controller Pattern](#controller-pattern)
    - [Operator Pattern](#operator-pattern)
-   - [CRD Versioning & Backward Compatibility](#crd-versioning--backward-compatibility)
-5. [Rancher APIs & Extensions](#rancher-apis--extensions)
+   - [CRD Versioning & Backward Compatibility](#crd-versioning-backward-compatibility)
+5. [Rancher APIs & Extensions](#rancher-apis-extensions)
    - [Rancher Architecture Overview](#rancher-architecture-overview)
    - [Rancher API Structure](#rancher-api-structure)
    - [Rancher Extensions](#rancher-extensions)
    - [Working with Rancher API](#working-with-rancher-api)
 6. [CNI Networking](#cni-networking)
    - [CNI Fundamentals](#cni-fundamentals)
-   - [Canal (Calico + Flannel)](#canal-calico--flannel)
+   - [Canal (Calico + Flannel)](#canal-calico-flannel)
    - [Network Policies](#network-policies)
-7. [CSI Storage & Longhorn](#csi-storage--longhorn)
+7. [CSI Storage & Longhorn](#csi-storage-longhorn)
    - [CSI Architecture](#csi-architecture)
    - [Longhorn Deep Dive](#longhorn-deep-dive)
    - [Backup and Restore](#backup-and-restore)
 8. [Cluster Lifecycle](#cluster-lifecycle)
-   - [Version Compatibility & Upgrade Paths](#version-compatibility--upgrade-paths)
+   - [Version Compatibility & Upgrade Paths](#version-compatibility-upgrade-paths)
    - [Upgrades](#upgrades)
-   - [Backup & Disaster Recovery](#backup--disaster-recovery)
+   - [Backup & Disaster Recovery](#backup-disaster-recovery)
    - [Certificate Management](#certificate-management)
 9. [Troubleshooting Guide](#troubleshooting-guide)
    - [Systematic Debugging Approach](#systematic-debugging-approach)
-   - [Advanced Debugging Tools & Best Practices](#advanced-debugging-tools--best-practices)
+   - [Advanced Debugging Tools & Best Practices](#advanced-debugging-tools-best-practices)
    - [RKE2-Specific Issues](#rke2-specific-issues)
    - [etcd Troubleshooting](#etcd-troubleshooting)
    - [Networking Issues](#networking-issues)
@@ -94,13 +94,11 @@ command -v etcdctl && echo "✓ etcdctl (optional)" || echo "✗ etcdctl not ins
 
 ---
 
-<a id="rke2-architecture"></a>
-## RKE2 Architecture
+## RKE2-Architecture
 
 **Time: 1.5 hours**
 
-<a id="why-rke2"></a>
-### Why RKE2
+### Why-RKE2
 
 RKE2 is Rancher's next-generation Kubernetes distribution, designed for security and compliance from the ground up.
 
@@ -124,8 +122,7 @@ RKE2 is Rancher's next-generation Kubernetes distribution, designed for security
 - Organizations needing security-by-default
 - Simplified operations compared to managing individual K8s components
 
-<a id="architecture-overview"></a>
-### Architecture Overview
+### Architecture-Overview
 
 **RKE2 Process Model:**
 
@@ -196,8 +193,7 @@ RKE2 is Rancher's next-generation Kubernetes distribution, designed for security
    - Metrics-server
    - Located in `/var/lib/rancher/rke2/agent/pod-manifests/`
 
-<a id="installation--configuration"></a>
-### Installation & Configuration
+### Installation-Configuration
 
 **Installation (Server Node):**
 
@@ -345,8 +341,7 @@ journalctl -u rke2-agent                    # Agent logs
 /var/lib/rancher/rke2/agent/etc/cni/net.d/ # RKE2-managed CNI config
 ```
 
-<a id="systemd-service-model"></a>
-### systemd Service Model
+### systemd-Service-Model
 
 **Understanding rke2-server.service:**
 
@@ -470,13 +465,11 @@ kubectl get endpoints -n kube-system
 
 ---
 
-<a id="kubernetes-control-plane-internals"></a>
-## Kubernetes Control Plane Internals
+## Kubernetes-Control-Plane-Internals
 
 **Time: 2 hours**
 
-<a id="api-server-deep-dive"></a>
-### API Server Deep Dive
+### API-Server-Deep-Dive
 
 The API server is the **central hub** of Kubernetes. All components communicate through it, and it's the only component that talks to etcd.
 
@@ -574,8 +567,7 @@ kubectl get --raw='/metrics' | grep apiserver
 journalctl -u rke2-server | grep apiserver
 ```
 
-<a id="request-flow-through-the-system"></a>
-### Request Flow Through the System
+### Request-Flow-Through-the-System
 
 **Example: Creating a Deployment**
 
@@ -703,8 +695,7 @@ for event := range watcher.ResultChan() {
 # - Scalable (API server fans out to many watchers)
 ```
 
-<a id="etcd-operations"></a>
-### etcd Operations
+### etcd-Operations
 
 **What is etcd?**
 
@@ -824,8 +815,7 @@ etcdctl endpoint status -w table
 # API server flag: --etcd-compaction-interval=5m (default)
 ```
 
-<a id="scheduler-internals"></a>
-### Scheduler Internals
+### Scheduler-Internals
 
 **Scheduler Responsibility:**
 
@@ -978,8 +968,7 @@ spec:
         memory: 256Mi
 ```
 
-<a id="controller-manager"></a>
-### Controller Manager
+### Controller-Manager
 
 **What is the Controller Manager?**
 
@@ -1112,13 +1101,11 @@ kubectl get events -A | grep Node
 
 ---
 
-<a id="crds--controllers"></a>
-## CRDs & Controllers
+## CRDs-Controllers
 
 **Time: 1 hour**
 
-<a id="custom-resource-definitions"></a>
-### Custom Resource Definitions
+### Custom-Resource-Definitions
 
 **What are CRDs?**
 
@@ -1227,8 +1214,7 @@ kubectl get backups --watch
 # You need a controller to act on it
 ```
 
-<a id="controller-pattern"></a>
-### Controller Pattern
+### Controller-Pattern
 
 **What is a Controller?**
 
@@ -1344,8 +1330,7 @@ kubectl get <resource> -o yaml | grep -A 5 finalizers
 # Fix: kubectl patch <resource> -p '{"metadata":{"finalizers":[]}}' --type=merge
 ```
 
-<a id="operator-pattern"></a>
-### Operator Pattern
+### Operator-Pattern
 
 **What is an Operator?**
 
@@ -1425,8 +1410,7 @@ kubectl get secret example-com-tls
 kubectl describe secret example-com-tls
 ```
 
-<a id="crd-versioning--backward-compatibility"></a>
-### CRD Versioning & Backward Compatibility
+### CRD-Versioning-Backward-Compatibility
 
 **Why CRD Versioning Matters:**
 
@@ -1621,13 +1605,11 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 
 ---
 
-<a id="rancher-apis--extensions"></a>
-## Rancher APIs & Extensions
+## Rancher-APIs-Extensions
 
 **Time: 45 minutes**
 
-<a id="rancher-architecture-overview"></a>
-### Rancher Architecture Overview
+### Rancher-Architecture-Overview
 
 **Rancher vs RKE2:**
 
@@ -1662,8 +1644,7 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 └─────────────┘ └─────────────┘ └─────────────┘
 ```
 
-<a id="rancher-api-structure"></a>
-### Rancher API Structure
+### Rancher-API-Structure
 
 **Rancher extends Kubernetes API with custom resources:**
 
@@ -1725,8 +1706,7 @@ spec:
       limitsMemory: "2Gi"
 ```
 
-<a id="rancher-extensions"></a>
-### Rancher Extensions
+### Rancher-Extensions
 
 **1. Custom Catalogs (Helm Charts):**
 
@@ -1780,8 +1760,7 @@ spec:
   checksum: abc123...
 ```
 
-<a id="working-with-rancher-api"></a>
-### Working with Rancher API
+### Working-with-Rancher-API
 
 **API Access:**
 
@@ -1866,13 +1845,11 @@ clusters = client.list_clusters()
 
 ---
 
-<a id="cni-networking"></a>
-## CNI Networking
+## CNI-Networking
 
 **Time: 1 hour**
 
-<a id="cni-fundamentals"></a>
-### CNI Fundamentals
+### CNI-Fundamentals
 
 **What is CNI?**
 
@@ -1923,8 +1900,7 @@ ls -la /var/lib/rancher/rke2/agent/etc/cni/net.d/
 cat /var/lib/rancher/rke2/agent/etc/cni/net.d/10-canal.conflist
 ```
 
-<a id="canal-calico--flannel"></a>
-### Canal (Calico + Flannel)
+### Canal-Calico-Flannel
 
 **What is Canal?**
 
@@ -2023,8 +1999,7 @@ cat /run/flannel/subnet.env
 # FLANNEL_MTU=1450
 ```
 
-<a id="network-policies"></a>
-### Network Policies
+### Network-Policies
 
 **What are Network Policies?**
 
@@ -2190,13 +2165,11 @@ kubectl get networkpolicies --all-namespaces
 
 ---
 
-<a id="csi-storage--longhorn"></a>
-## CSI Storage & Longhorn
+## CSI-Storage-Longhorn
 
 **Time: 1 hour**
 
-<a id="csi-architecture"></a>
-### CSI Architecture
+### CSI-Architecture
 
 **What is CSI?**
 
@@ -2259,8 +2232,7 @@ Container Storage Interface - standard for exposing storage systems to container
 9. DELETE: CSI controller deletes volume (if reclaimPolicy: Delete)
 ```
 
-<a id="longhorn-deep-dive"></a>
-### Longhorn Deep Dive
+### Longhorn-Deep-Dive
 
 **What is Longhorn?**
 
@@ -2436,8 +2408,7 @@ kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
 # - Backups (view, restore)
 ```
 
-<a id="backup-and-restore"></a>
-### Backup and Restore
+### Backup-and-Restore
 
 **Snapshots (Local):**
 
@@ -2533,13 +2504,11 @@ kubectl logs -n longhorn-system <longhorn-manager-pod> | grep backup
 
 ---
 
-<a id="cluster-lifecycle"></a>
-## Cluster Lifecycle
+## Cluster-Lifecycle
 
 **Time: 45 minutes**
 
-<a id="version-compatibility--upgrade-paths"></a>
-### Version Compatibility & Upgrade Paths
+### Version-Compatibility-Upgrade-Paths
 
 **RKE2 / Kubernetes Version Compatibility:**
 
@@ -2826,8 +2795,7 @@ kubectl logs -n system-upgrade -l upgrade.cattle.io/plan=server-plan
 5. Read release notes for breaking changes
 6. Upgrade one minor version at a time (1.27 → 1.28 → 1.29, not 1.27 → 1.29)
 
-<a id="backup--disaster-recovery"></a>
-### Backup & Disaster Recovery
+### Backup-Disaster-Recovery
 
 **etcd Snapshots:**
 
@@ -2919,8 +2887,7 @@ kubectl get configmap --all-namespaces -o yaml > configmaps-backup.yaml
 # (backs up etcd + PVs + manifests)
 ```
 
-<a id="certificate-management"></a>
-### Certificate Management
+### Certificate-Management
 
 **RKE2 Certificates:**
 
@@ -2973,15 +2940,13 @@ systemctl start rke2-server
 
 ---
 
-<a id="troubleshooting-guide"></a>
-## Troubleshooting Guide
+## Troubleshooting-Guide
 
 **Time: 1.5 hours**
 
 This is the most important section for a support engineer role. Focus on systematic diagnosis and root cause analysis.
 
-<a id="systematic-debugging-approach"></a>
-### Systematic Debugging Approach
+### Systematic-Debugging-Approach
 
 **The Debugging Workflow:**
 
@@ -3053,8 +3018,7 @@ journalctl -u rke2-agent -f
 journalctl -u rke2-server --since "10 minutes ago"
 ```
 
-<a id="advanced-debugging-tools--best-practices"></a>
-### Advanced Debugging Tools & Best Practices
+### Advanced-Debugging-Tools-Best-Practices
 
 **Essential Debugging Toolkit:**
 
@@ -3344,8 +3308,7 @@ kubectl get <resource> -o jsonpath='{.items[?(@.metadata.deletionTimestamp)].met
    kubectl get all -n <namespace>
    ```
 
-<a id="rke2-specific-issues"></a>
-### RKE2-Specific Issues
+### RKE2-Specific-Issues
 
 **Issue: rke2-server won't start**
 
@@ -3459,8 +3422,7 @@ journalctl -u rke2-agent | grep -i "certificate"
 timedatectl status
 ```
 
-<a id="etcd-troubleshooting"></a>
-### etcd Troubleshooting
+### etcd-Troubleshooting
 
 **Issue: etcd cluster unhealthy**
 
@@ -3574,8 +3536,7 @@ etcdctl member list
 etcdctl endpoint health --cluster
 ```
 
-<a id="networking-issues"></a>
-### Networking Issues
+### Networking-Issues
 
 **Issue: Pod can't reach another pod**
 
@@ -3695,8 +3656,7 @@ nslookup kubernetes.default.svc.cluster.local 10.43.0.10
 kubectl rollout restart deployment -n kube-system coredns
 ```
 
-<a id="storage-issues"></a>
-### Storage Issues
+### Storage-Issues
 
 **Issue: Pod stuck in ContainerCreating (volume mount issue)**
 
@@ -3807,8 +3767,7 @@ kubectl get sc <storage-class> -o yaml | grep volumeBindingMode
 # Fix: Create pod to trigger binding
 ```
 
-<a id="node-problems"></a>
-### Node Problems
+### Node-Problems
 
 **Issue: Node out of resources**
 
@@ -3879,8 +3838,7 @@ spec:
     effect: "NoSchedule"
 ```
 
-<a id="upgrade-failures"></a>
-### Upgrade Failures
+### Upgrade-Failures
 
 **Issue: Node stuck during upgrade**
 
@@ -3952,8 +3910,7 @@ journalctl -u rke2-server | grep "etcd"
 
 ---
 
-<a id="interview-questions"></a>
-## Interview Questions
+## Interview-Questions
 
 **RKE2 Architecture:**
 
@@ -4095,8 +4052,7 @@ journalctl -u rke2-server | grep "etcd"
 
 ---
 
-<a id="quick-reference"></a>
-## Quick Reference
+## Quick-Reference
 
 **RKE2 Essentials:**
 
