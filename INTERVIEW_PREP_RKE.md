@@ -24,28 +24,36 @@
    - [Custom Resource Definitions](#custom-resource-definitions)
    - [Controller Pattern](#controller-pattern)
    - [Operator Pattern](#operator-pattern)
-5. [CNI Networking](#cni-networking)
+   - [CRD Versioning & Backward Compatibility](#crd-versioning--backward-compatibility)
+5. [Rancher APIs & Extensions](#rancher-apis--extensions)
+   - [Rancher Architecture Overview](#rancher-architecture-overview)
+   - [Rancher API Structure](#rancher-api-structure)
+   - [Rancher Extensions](#rancher-extensions)
+   - [Working with Rancher API](#working-with-rancher-api)
+6. [CNI Networking](#cni-networking)
    - [CNI Fundamentals](#cni-fundamentals)
    - [Canal (Calico + Flannel)](#canal-calico--flannel)
    - [Network Policies](#network-policies)
-6. [CSI Storage & Longhorn](#csi-storage--longhorn)
+7. [CSI Storage & Longhorn](#csi-storage--longhorn)
    - [CSI Architecture](#csi-architecture)
    - [Longhorn Deep Dive](#longhorn-deep-dive)
    - [Backup and Restore](#backup-and-restore)
-7. [Cluster Lifecycle](#cluster-lifecycle)
+8. [Cluster Lifecycle](#cluster-lifecycle)
+   - [Version Compatibility & Upgrade Paths](#version-compatibility--upgrade-paths)
    - [Upgrades](#upgrades)
    - [Backup & Disaster Recovery](#backup--disaster-recovery)
    - [Certificate Management](#certificate-management)
-8. [Troubleshooting Guide](#troubleshooting-guide)
+9. [Troubleshooting Guide](#troubleshooting-guide)
    - [Systematic Debugging Approach](#systematic-debugging-approach)
+   - [Advanced Debugging Tools & Best Practices](#advanced-debugging-tools--best-practices)
    - [RKE2-Specific Issues](#rke2-specific-issues)
    - [etcd Troubleshooting](#etcd-troubleshooting)
    - [Networking Issues](#networking-issues)
    - [Storage Issues](#storage-issues)
    - [Node Problems](#node-problems)
    - [Upgrade Failures](#upgrade-failures)
-9. [Interview Questions](#interview-questions)
-10. [Quick Reference](#quick-reference)
+10. [Interview Questions](#interview-questions)
+11. [Quick Reference](#quick-reference)
 
 ---
 
@@ -76,12 +84,13 @@ command -v etcdctl && echo "✓ etcdctl (optional)" || echo "✗ etcdctl not ins
 **Estimated Time Breakdown:**
 - RKE2 Architecture: 1.5 hours
 - Kubernetes Internals: 2 hours
-- CRDs & Controllers: 1 hour
+- CRDs & Controllers: 1 hour (conceptual, including versioning)
+- Rancher APIs & Extensions: 30 minutes
 - CNI Networking: 1 hour
 - CSI Storage & Longhorn: 1 hour
-- Cluster Lifecycle: 45 minutes
+- Cluster Lifecycle: 1.5 hours (including version compatibility)
 - Troubleshooting Guide: 1.5 hours
-- **Total: ~8.25 hours**
+- **Total: ~10 hours**
 
 ---
 
@@ -1211,49 +1220,61 @@ kubectl get backups --watch
 
 A control loop that watches resources and takes action to reconcile current state with desired state.
 
-**Controller Reconciliation:**
+**Controller Reconciliation Concept:**
 
-```go
-// Simplified controller pseudocode
-func (c *BackupController) Run() {
-    // List all existing backups
-    backups := client.List(&BackupList{})
+Controllers use a reconciliation loop pattern that watches resources and takes action to reconcile current state with desired state. The basic flow is:
 
-    // Watch for changes
-    watcher := client.Watch(&BackupList{})
+1. **Watch for changes** - Controllers establish watch streams to the API server for specific resource types
+2. **Receive events** - API server sends events (ADDED/MODIFIED/DELETED) when resources change
+3. **Reconcile** - Controller compares current state vs desired state and takes action
+4. **Update status** - Controller updates the resource status to reflect observed state
+5. **Requeue if needed** - Controller can requeue for periodic checks or retry on failure
 
-    for {
-        select {
-        case event := <-watcher.ResultChan():
-            switch event.Type {
-            case "ADDED":
-                c.reconcile(event.Object)
-            case "MODIFIED":
-                c.reconcile(event.Object)
-            case "DELETED":
-                c.cleanup(event.Object)
-            }
-        }
-    }
-}
+**Example Reconciliation Flow:**
 
-func (c *BackupController) reconcile(backup *Backup) {
-    // 1. Check if backup job should run
-    if shouldRunNow(backup.Spec.Schedule) {
-        // 2. Create K8s Job to perform backup
-        job := createBackupJob(backup)
-        client.Create(job)
+When you create a Backup custom resource with a schedule, the controller:
+1. Receives the ADDED event for the Backup resource
+2. Checks if it's time to run based on the schedule
+3. Creates a Kubernetes Job to perform the backup
+4. Updates the Backup status to "Running"
+5. Requeues for the next scheduled time
+6. Cleans old backups based on retention policy
 
-        // 3. Update status
-        backup.Status.State = "Running"
-        backup.Status.LastBackup = time.Now()
-        client.UpdateStatus(backup)
-    }
+**Key Controller Concepts:**
 
-    // 4. Clean old backups based on retention
-    cleanOldBackups(backup.Spec.Retention)
-}
-```
+1. **Reconciliation Loop**
+   - Triggered by resource changes (ADDED/MODIFIED/DELETED)
+   - Always works toward desired state
+   - Idempotent - can be called multiple times safely
+
+2. **Owner References**
+   - Child resources reference parent
+   - Automatic garbage collection when parent deleted
+   - Enables resource hierarchy
+
+3. **Status Subresource**
+   - Separate from spec (desired state)
+   - Updated by controller (observed state)
+   - Prevents conflicts between user edits and controller updates
+
+4. **Requeue Strategies**
+   - Requeue immediately when something fails and should be retried
+   - Requeue after a duration for periodic checks (e.g., 5 minutes)
+   - Don't requeue on success (will be triggered by future watch events)
+   - Return error for automatic exponential backoff requeue
+
+5. **Watch Mechanism**
+   - Watch primary resources (e.g., Backup CRDs)
+   - Watch owned resources (e.g., Jobs created by the controller)
+   - Watch arbitrary resources that affect reconciliation (e.g., ConfigMaps)
+
+**Testing Controllers:**
+
+Controllers should be tested using envtest, which provides a real API server for integration testing. Tests should verify:
+- Resources are created correctly when CRDs are added
+- Status is updated properly
+- Owned resources are created with correct owner references
+- Reconciliation logic handles edge cases (missing resources, conflicts, etc.)
 
 **Real-World Example: Longhorn Controller**
 
@@ -1282,6 +1303,31 @@ kubectl get pv
 kubectl get volumes.longhorn.io -n longhorn-system
 kubectl get replicas.longhorn.io -n longhorn-system
 kubectl get engines.longhorn.io -n longhorn-system
+```
+
+**Debugging Controllers:**
+
+```bash
+# View controller logs
+kubectl logs -n <namespace> deployment/<controller> -f
+
+# Common issues:
+# 1. RBAC permissions missing
+kubectl get clusterrole <controller>-role -o yaml
+
+# 2. Webhook configuration issues
+kubectl get validatingwebhookconfigurations
+kubectl get mutatingwebhookconfigurations
+
+# 3. Rate limiting / API throttling
+# Check controller logs for "rate limit" or "throttle"
+
+# 4. Resource leaks
+kubectl get <resource> --all-namespaces | wc -l
+
+# 5. Finalizer deadlocks (resources stuck deleting)
+kubectl get <resource> -o yaml | grep -A 5 finalizers
+# Fix: kubectl patch <resource> -p '{"metadata":{"finalizers":[]}}' --type=merge
 ```
 
 ### Operator Pattern
@@ -1364,6 +1410,188 @@ kubectl get secret example-com-tls
 kubectl describe secret example-com-tls
 ```
 
+### CRD Versioning & Backward Compatibility
+
+**Why CRD Versioning Matters:**
+
+When building production operators, you'll need to evolve your API over time without breaking existing users. Kubernetes provides built-in mechanisms for API versioning and deprecation.
+
+**Multi-Version CRD Example:**
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databases.stable.example.com
+spec:
+  group: stable.example.com
+  names:
+    plural: databases
+    singular: database
+    kind: Database
+  scope: Namespaced
+  versions:
+  # v1 - Current stable version
+  - name: v1
+    served: true
+    storage: true  # Only ONE version can be storage version
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              engine:
+                type: string
+                enum: [postgres, mysql, mongodb]
+              version:
+                type: string
+              replicas:
+                type: integer
+                minimum: 1
+                maximum: 5
+              resources:
+                type: object
+                properties:
+                  storage:
+                    type: string
+                  memory:
+                    type: string
+                  cpu:
+                    type: string
+            required:
+            - engine
+            - version
+
+  # v1beta1 - Deprecated but still served
+  - name: v1beta1
+    served: true
+    storage: false
+    deprecated: true
+    deprecationWarning: "stable.example.com/v1beta1 Database is deprecated; use stable.example.com/v1 Database"
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              engine:
+                type: string
+              version:
+                type: string
+              size:  # Old field name
+                type: string
+                enum: [small, medium, large]
+            required:
+            - engine
+            - version
+
+  # Conversion webhook (optional - for automatic conversion)
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        service:
+          namespace: default
+          name: database-converter
+          path: /convert
+      conversionReviewVersions:
+      - v1
+      - v1beta1
+```
+
+**Backward Compatibility Strategies:**
+
+1. **Additive Changes Only (Safe)**
+   - Add new optional fields
+   - Add new API versions while keeping old ones
+   - Add new enum values
+
+2. **Breaking Changes (Requires Migration)**
+   - Remove fields (requires deprecation cycle)
+   - Change field types
+   - Make optional fields required
+
+3. **Deprecation Timeline**
+   ```
+   Release N: Introduce v2, mark v1 as deprecated
+   Release N+1: Continue serving both v1 (deprecated) and v2
+   Release N+2: Continue serving both, add loud warnings
+   Release N+3: Remove v1, only serve v2
+   ```
+
+**Conversion Webhook Concept:**
+
+A conversion webhook transforms CRD objects between different API versions. For example, if you deprecated a "size" field (small/medium/large) in favor of explicit "resources" fields, the webhook would:
+
+1. Receive conversion request from API server
+2. Check source and destination versions
+3. Map old fields to new fields (e.g., size="small" becomes storage="10Gi", memory="2Gi")
+4. Remove deprecated fields
+5. Return converted object
+
+This allows clients to use any supported API version while the cluster stores data in a single canonical version.
+
+**Real-World Example: Longhorn API Evolution**
+
+```bash
+# Longhorn supports multiple API versions
+kubectl get crd volumes.longhorn.io -o yaml | grep -A 10 versions:
+
+# Example output shows:
+# - v1beta2 (storage: true, served: true)
+# - v1beta1 (storage: false, served: true, deprecated)
+
+# You can use either version:
+kubectl get volumes.longhorn.io.v1beta2 -n longhorn-system
+kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
+
+# Kubernetes automatically converts between versions
+```
+
+**Best Practices for API Compatibility:**
+
+1. **Never change storage version without migration**
+   - Changing storage version requires re-writing all objects in etcd
+   - Use storage version migration tool
+
+2. **Test conversion paths**
+   ```bash
+   # Create object with old API version
+   kubectl apply -f database-v1beta1.yaml
+
+   # Read with new API version
+   kubectl get database my-db -o yaml
+   # Should show converted fields
+   ```
+
+3. **Document migration guides**
+   - Provide clear upgrade instructions
+   - Include example manifests for each version
+   - Explain field mappings
+
+4. **Use validating webhooks for safety**
+   ```yaml
+   # Prevent creating objects with deprecated fields
+   apiVersion: admissionregistration.k8s.io/v1
+   kind: ValidatingWebhookConfiguration
+   metadata:
+     name: database-validator
+   webhooks:
+   - name: validate.database.stable.example.com
+     rules:
+     - apiGroups: ["stable.example.com"]
+       apiVersions: ["v1"]
+       operations: ["CREATE", "UPDATE"]
+       resources: ["databases"]
+     clientConfig:
+       service:
+         name: database-validator
+         namespace: default
+   ```
+
 **Knowledge Check:**
 
 1. What's the difference between a CRD and a controller?
@@ -1371,6 +1599,249 @@ kubectl describe secret example-com-tls
 3. How do controllers avoid conflicts when multiple instances are running?
 4. What happens if a controller crashes - is state lost?
 5. Name three operators used in production environments.
+6. How would you safely deprecate a CRD field in production?
+7. What's the purpose of a conversion webhook?
+8. Can you serve multiple API versions simultaneously?
+
+---
+
+## Rancher APIs & Extensions
+
+**Time: 45 minutes**
+
+### Rancher Architecture Overview
+
+**Rancher vs RKE2:**
+
+- **RKE2**: Kubernetes distribution (like vanilla K8s, but secure by default)
+- **Rancher**: Multi-cluster management platform that can manage RKE2, EKS, AKS, GKE, etc.
+
+**Rancher Components:**
+
+```
+┌─────────────────────────────────────────────────────┐
+│              Rancher Management Cluster             │
+│                                                     │
+│  ┌──────────────────────────────────────────────┐   │
+│  │         Rancher Server                       │   │
+│  │  - API Server (extends K8s API)              │   │
+│  │  - Authentication Provider                   │   │
+│  │  - RBAC Management                           │   │
+│  │  - Cluster Agent Management                  │   │
+│  └──────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+        ▼             ▼             ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│  RKE2       │ │  EKS        │ │  GKE        │
+│  Cluster 1  │ │  Cluster 2  │ │  Cluster 3  │
+│             │ │             │ │             │
+│  cattle-    │ │  cattle-    │ │  cattle-    │
+│  cluster-   │ │  cluster-   │ │  cluster-   │
+│  agent      │ │  agent      │ │  agent      │
+└─────────────┘ └─────────────┘ └─────────────┘
+```
+
+### Rancher API Structure
+
+**Rancher extends Kubernetes API with custom resources:**
+
+```bash
+# Rancher-specific CRDs
+kubectl get crd | grep cattle.io
+
+# Key Rancher CRDs:
+# - clusters.management.cattle.io         # Cluster definitions
+# - projects.management.cattle.io         # Project (namespace groups)
+# - users.management.cattle.io            # User management
+# - apps.catalog.cattle.io                # App catalog
+# - clusterrepos.catalog.cattle.io        # Helm chart repos
+```
+
+**Rancher API Examples:**
+
+```yaml
+# 1. Cluster Resource - Defines a managed cluster
+apiVersion: provisioning.cattle.io/v1
+kind: Cluster
+metadata:
+  name: my-rke2-cluster
+  namespace: fleet-default
+spec:
+  kubernetesVersion: v1.28.5+rke2r1
+  rkeConfig:
+    machineGlobalConfig:
+      cni: calico
+      disable:
+      - rke2-ingress-nginx
+      etcd-snapshot-schedule-cron: "0 */12 * * *"
+      etcd-snapshot-retention: 5
+    machineSelectorConfig:
+    - config:
+        protect-kernel-defaults: true
+      machineLabelSelector:
+        matchLabels:
+          node-role.kubernetes.io/control-plane: "true"
+```
+
+```yaml
+# 2. Project Resource - Groups namespaces
+apiVersion: management.cattle.io/v3
+kind: Project
+metadata:
+  name: my-project
+  namespace: c-abcde  # Cluster ID
+spec:
+  displayName: "Production Apps"
+  description: "Production application namespaces"
+  resourceQuota:
+    limit:
+      limitsCpu: "10000m"
+      limitsMemory: "20Gi"
+  namespaceDefaultResourceQuota:
+    limit:
+      limitsCpu: "1000m"
+      limitsMemory: "2Gi"
+```
+
+### Rancher Extensions
+
+**1. Custom Catalogs (Helm Charts):**
+
+```yaml
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: my-company-charts
+spec:
+  url: https://charts.example.com
+  gitRepo: https://github.com/example/charts
+  gitBranch: main
+```
+
+**2. Custom UI Extensions:**
+
+Rancher supports UI extensions for adding custom dashboards and functionality.
+
+```javascript
+// Rancher UI extension structure
+export function init($plugin, store) {
+  // Add custom navigation item
+  $plugin.addNavItem({
+    label: 'My Custom Tool',
+    icon: 'icon-gear',
+    to: { name: 'my-custom-route' }
+  });
+
+  // Add custom cluster action
+  $plugin.addClusterAction({
+    label: 'Custom Backup',
+    action: (cluster) => {
+      // Trigger custom backup logic
+    }
+  });
+}
+```
+
+**3. Rancher Webhooks & Drivers:**
+
+```yaml
+# Machine driver for custom cloud providers
+apiVersion: management.cattle.io/v3
+kind: NodeDriver
+metadata:
+  name: custom-provider
+spec:
+  active: true
+  builtin: false
+  url: https://github.com/example/docker-machine-driver-custom/releases/download/v1.0.0/driver.tar.gz
+  checksum: abc123...
+```
+
+### Working with Rancher API
+
+**API Access:**
+
+```bash
+# Get Rancher API endpoint
+RANCHER_URL=https://rancher.example.com
+
+# Create API token (from Rancher UI or via API)
+TOKEN="token-xxxxx:xxxxxxxxxxxxxxxxx"
+
+# List clusters via API
+curl -k -H "Authorization: Bearer ${TOKEN}" \
+  "${RANCHER_URL}/v3/clusters"
+
+# Get specific cluster
+curl -k -H "Authorization: Bearer ${TOKEN}" \
+  "${RANCHER_URL}/v3/clusters/c-abcde"
+
+# List nodes in cluster
+curl -k -H "Authorization: Bearer ${TOKEN}" \
+  "${RANCHER_URL}/v3/clusters/c-abcde/nodes"
+
+# Create project via API
+curl -k -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "project",
+    "name": "my-project",
+    "clusterId": "c-abcde"
+  }' \
+  "${RANCHER_URL}/v3/projects"
+```
+
+**Python API Client Example:**
+
+```python
+import requests
+
+class RancherClient:
+    def __init__(self, url, token):
+        self.url = url
+        self.token = token
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+    def list_clusters(self):
+        response = requests.get(
+            f"{self.url}/v3/clusters",
+            headers=self.headers,
+            verify=False
+        )
+        return response.json()
+
+    def create_namespace(self, cluster_id, project_id, namespace):
+        payload = {
+            "type": "namespace",
+            "name": namespace,
+            "projectId": f"{cluster_id}:{project_id}"
+        }
+        response = requests.post(
+            f"{self.url}/v3/clusters/{cluster_id}/namespaces",
+            headers=self.headers,
+            json=payload,
+            verify=False
+        )
+        return response.json()
+
+# Usage
+client = RancherClient("https://rancher.example.com", "token-xxxxx:xxx")
+clusters = client.list_clusters()
+```
+
+**Knowledge Check:**
+
+1. What's the difference between Rancher and RKE2?
+2. How does Rancher extend the Kubernetes API?
+3. What is a Rancher Project and how does it differ from a namespace?
+4. How would you automate cluster provisioning via Rancher API?
 
 ---
 
@@ -2037,6 +2508,188 @@ kubectl logs -n longhorn-system <longhorn-manager-pod> | grep backup
 
 **Time: 45 minutes**
 
+### Version Compatibility & Upgrade Paths
+
+**RKE2 / Kubernetes Version Compatibility:**
+
+Understanding version compatibility is critical for safe upgrades and troubleshooting.
+
+**RKE2 Versioning Scheme:**
+
+```
+v1.28.5+rke2r1
+ │  │  │   │  └─ RKE2 release number (patch for RKE2-specific fixes)
+ │  │  │   └──── RKE2 suffix
+ │  │  └──────── Kubernetes patch version
+ │  └─────────── Kubernetes minor version
+ └────────────── Major version
+```
+
+**Kubernetes Version Support Matrix:**
+
+| RKE2 Release | K8s Versions Supported | Support Status | EOL Date |
+|--------------|------------------------|----------------|----------|
+| v1.29.x      | 1.29.0 - 1.29.x       | Active         | ~Oct 2024 |
+| v1.28.x      | 1.28.0 - 1.28.x       | Active         | ~Jul 2024 |
+| v1.27.x      | 1.27.0 - 1.27.x       | Maintenance    | ~Apr 2024 |
+| v1.26.x      | 1.26.0 - 1.26.x       | EOL            | Jan 2024 |
+
+**Longhorn Version Compatibility:**
+
+| Longhorn Version | Kubernetes Versions | RKE2 Versions | Notes |
+|------------------|---------------------|---------------|-------|
+| v1.6.x          | 1.21 - 1.29         | All supported | Recommended for K8s 1.28+ |
+| v1.5.x          | 1.21 - 1.27         | v1.27 and older | CSI v1.8 support |
+| v1.4.x          | 1.21 - 1.25         | v1.25 and older | Legacy support |
+
+**CNI Version Compatibility:**
+
+| CNI Plugin | RKE2 Version | Kubernetes | Notes |
+|------------|--------------|------------|-------|
+| Canal      | All RKE2     | All K8s    | Default, Calico + Flannel |
+| Calico v3.27 | v1.28+     | 1.26+      | Standalone mode |
+| Calico v3.26 | v1.27+     | 1.25+      | Legacy |
+| Flannel    | All RKE2     | All K8s    | Simple overlay |
+| Cilium v1.14 | v1.28+     | 1.26+      | Advanced features |
+
+**Upgrade Path Decision Tree:**
+
+```
+Current: RKE2 v1.26.10+rke2r1 (K8s 1.26)
+Target:  RKE2 v1.29.2+rke2r1 (K8s 1.29)
+
+Can I upgrade directly?
+├─ NO - Never skip minor versions
+│
+└─ Safe upgrade path:
+   1. v1.26.10 → v1.27.10+rke2r1  (First upgrade to latest 1.27)
+      - Check: Longhorn compatibility ✓
+      - Check: CNI compatibility ✓
+      - Test in staging
+      - Backup etcd
+      - Upgrade
+
+   2. v1.27.10 → v1.28.8+rke2r1   (Then to latest 1.28)
+      - Check: API deprecations (v1beta1 CronJob removed!)
+      - Update manifests
+      - Test in staging
+      - Backup etcd
+      - Upgrade
+
+   3. v1.28.8 → v1.29.2+rke2r1    (Finally to target)
+      - Check: New features/changes
+      - Test in staging
+      - Backup etcd
+      - Upgrade
+```
+
+**Component Version Dependencies:**
+
+```bash
+# Check what versions are running
+kubectl version --short
+kubectl get nodes -o wide
+
+# Check Longhorn version
+kubectl get settings.longhorn.io -n longhorn-system -o yaml | grep current-longhorn-version
+
+# Check CNI version (example for Calico)
+kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].spec.containers[0].image}'
+
+# Check containerd version (RKE2 bundles specific version)
+crictl version
+
+# Check etcd version
+/var/lib/rancher/rke2/bin/etcdctl version
+```
+
+**API Version Deprecations:**
+
+Kubernetes deprecates API versions over time. Know what's removed in each version:
+
+| Kubernetes Version | API Removals | Action Required |
+|--------------------|--------------|-----------------|
+| 1.25 | PodSecurityPolicy (v1beta1) | Migrate to Pod Security Standards |
+| 1.25 | CronJob (v1beta1) | Update to batch/v1 |
+| 1.26 | HorizontalPodAutoscaler (v2beta2) | Update to autoscaling/v2 |
+| 1.27 | storage.k8s.io/v1beta1 CSIStorageCapacity | Update to storage.k8s.io/v1 |
+| 1.29 | flowcontrol.apiserver.k8s.io/v1beta2 | Update to v1beta3 |
+
+**Pre-Upgrade Checklist:**
+
+```bash
+# 1. Check for deprecated API usage
+kubectl get --raw /metrics | grep apiserver_requested_deprecated_apis
+
+# 2. Use pluto to scan for deprecated APIs in manifests
+pluto detect-files -d .
+pluto detect-helm -o wide
+
+# 3. Check cluster health
+kubectl get nodes
+kubectl get pods -A | grep -v Running
+kubectl get componentstatuses  # Deprecated but useful
+
+# 4. Backup etcd
+rke2 etcd-snapshot save --name pre-upgrade-$(date +%Y%m%d)
+
+# 5. Verify backup
+rke2 etcd-snapshot ls
+
+# 6. Document current state
+kubectl get nodes -o yaml > nodes-pre-upgrade.yaml
+kubectl version --short > versions-pre-upgrade.txt
+```
+
+**Longhorn Upgrade Strategy:**
+
+```bash
+# 1. Check current Longhorn version
+kubectl get settings.longhorn.io -n longhorn-system current-longhorn-version
+
+# 2. Read upgrade notes for target version
+# https://longhorn.io/docs/VERSION/deploy/upgrade/
+
+# 3. Create backup of Longhorn volumes
+# Via Longhorn UI or CLI
+
+# 4. Upgrade Longhorn (example: Helm)
+helm repo update
+helm upgrade longhorn longhorn/longhorn \
+  --namespace longhorn-system \
+  --version 1.6.0
+
+# 5. Wait for rollout
+kubectl rollout status deployment/longhorn-driver-deployer -n longhorn-system
+kubectl rollout status deployment/longhorn-manager -n longhorn-system
+
+# 6. Verify upgrade
+kubectl get pods -n longhorn-system
+kubectl get settings.longhorn.io -n longhorn-system current-longhorn-version
+```
+
+**Version Skew Policy:**
+
+Kubernetes has strict version skew policies:
+
+```
+Control Plane: v1.28.5
+Worker Nodes:  v1.28.x or v1.27.x (max -1 minor version)
+kubectl:       v1.29.x, v1.28.x, or v1.27.x (±1 minor version)
+```
+
+If your control plane is v1.28, you can have:
+- Worker nodes on v1.28 or v1.27
+- kubectl on v1.29, v1.28, or v1.27
+
+**Knowledge Check:**
+
+1. Can you upgrade from RKE2 v1.26 to v1.29 directly?
+2. What happens if you use a deprecated API after it's removed?
+3. How do you check which Longhorn version is compatible with K8s 1.28?
+4. What's the maximum version skew allowed between control plane and workers?
+5. Name three things you must do before upgrading a production cluster.
+
 ### Upgrades
 
 **RKE2 Upgrade Process:**
@@ -2364,6 +3017,296 @@ journalctl -u rke2-server -f
 journalctl -u rke2-agent -f
 journalctl -u rke2-server --since "10 minutes ago"
 ```
+
+### Advanced Debugging Tools & Best Practices
+
+**Essential Debugging Toolkit:**
+
+```bash
+# 1. kubectl debug - Ephemeral debug containers (K8s 1.23+)
+# Add debug container to running pod without modifying it
+kubectl debug <pod> -it --image=busybox --target=<container>
+
+# Debug with different image (network tools)
+kubectl debug <pod> -it --image=nicolaka/netshoot
+
+# Debug node by creating privileged pod
+kubectl debug node/<node-name> -it --image=ubuntu
+
+# 2. stern - Multi-pod log tailing
+# Install: https://github.com/stern/stern
+stern <pod-name-pattern> -n <namespace>
+stern . -n kube-system --since 5m  # All pods in namespace
+
+# 3. kubectx / kubens - Context and namespace switching
+kubectx production-cluster
+kubens kube-system
+
+# 4. k9s - Terminal UI for Kubernetes
+k9s  # Interactive cluster exploration
+# Features: real-time updates, logs, exec, port-forward, all in one UI
+
+# 5. Telepresence - Local development against remote cluster
+telepresence connect
+telepresence intercept <service> --port <local-port>
+
+# 6. ksniff - Packet capture for pods
+kubectl sniff <pod> -n <namespace>
+kubectl sniff <pod> -o capture.pcap
+# Open in Wireshark for analysis
+```
+
+**Deep Debugging Techniques:**
+
+**1. API Server Request Tracing:**
+
+```bash
+# Enable verbose kubectl output
+kubectl get pods -v=8  # Shows API calls
+kubectl get pods -v=9  # Shows request/response bodies
+
+# Watch API server metrics
+kubectl get --raw /metrics | grep apiserver_request
+
+# Check API server audit logs (if configured)
+ssh <control-plane-node>
+cat /var/lib/rancher/rke2/server/logs/audit.log | jq '.verb, .objectRef'
+```
+
+**2. etcd Deep Dive:**
+
+```bash
+# Check etcd database size
+etcdctl endpoint status --write-out=table
+
+# List all keys (be careful in production!)
+etcdctl get / --prefix --keys-only | head -20
+
+# Check specific resource
+etcdctl get /registry/pods/default/nginx -w json | jq .
+
+# Compact etcd database
+etcdctl compact <revision>
+etcdctl defrag --cluster
+
+# Check etcd performance
+etcdctl check perf
+# Should be:
+# - PASS: 60 MB/s for writes
+# - PASS: < 10ms for commits
+```
+
+**3. Container Runtime Debugging:**
+
+```bash
+# List containers with details
+crictl ps -a -o json | jq '.containers[] | {name, state, image}'
+
+# Inspect container for detailed info
+crictl inspect <container-id> | jq '.info.runtimeSpec.mounts'
+
+# Check container logs with timestamps
+crictl logs --timestamps <container-id>
+
+# Execute command in container (alternative to kubectl exec)
+crictl exec -it <container-id> /bin/sh
+
+# Pull image manually for troubleshooting
+crictl pull <image>
+
+# Check image layers
+crictl inspecti <image-id>
+```
+
+**4. Network Debugging:**
+
+```bash
+# Deploy debug pod with network tools
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netshoot
+spec:
+  containers:
+  - name: netshoot
+    image: nicolaka/netshoot
+    command: ["sleep", "infinity"]
+EOF
+
+# Test pod-to-pod connectivity
+kubectl exec netshoot -- ping <pod-ip>
+
+# Test service DNS resolution
+kubectl exec netshoot -- nslookup <service>.<namespace>.svc.cluster.local
+
+# Check iptables rules (on node)
+ssh <node>
+iptables-save | grep <service-ip>  # Find service rules
+iptables-save | grep KUBE-SVC      # List all service chains
+
+# Trace route between pods
+kubectl exec netshoot -- traceroute <pod-ip>
+
+# Check for packet loss
+kubectl exec netshoot -- mtr -c 10 <pod-ip>
+
+# Capture traffic
+kubectl exec netshoot -- tcpdump -i any -n port 80
+```
+
+**5. Storage Debugging:**
+
+```bash
+# Check volume attachment
+kubectl get volumeattachments
+kubectl describe volumeattachment <name>
+
+# Check CSI driver logs
+kubectl logs -n longhorn-system -l app=csi-attacher
+kubectl logs -n longhorn-system -l app=csi-provisioner
+
+# Verify volume is mounted on node
+ssh <node>
+mount | grep longhorn
+lsblk | grep longhorn
+
+# Check for I/O errors
+dmesg | grep -i "i/o error"
+journalctl -k | grep -i "ext4\|xfs"
+
+# Longhorn-specific debugging
+kubectl get volumes.longhorn.io -n longhorn-system -o wide
+kubectl get engines.longhorn.io -n longhorn-system -o wide
+kubectl get replicas.longhorn.io -n longhorn-system -o wide
+kubectl describe volume.longhorn.io <volume> -n longhorn-system
+```
+
+**6. Performance Debugging:**
+
+```bash
+# Check API server latency
+kubectl get --raw /metrics | grep apiserver_request_duration_seconds
+
+# Check scheduler latency
+kubectl get --raw /metrics | grep scheduler_scheduling_duration_seconds
+
+# Check kubelet metrics
+curl -k https://localhost:10250/metrics
+
+# Identify resource-intensive pods
+kubectl top pods -A --sort-by=cpu
+kubectl top pods -A --sort-by=memory
+
+# Check node resource pressure
+kubectl describe nodes | grep -A 5 "Allocated resources"
+
+# Profile specific components (if enabled)
+kubectl get --raw /debug/pprof/heap > heap.prof
+go tool pprof heap.prof
+```
+
+**7. Debugging Controller/Operator Issues:**
+
+```bash
+# Check controller logs for reconciliation errors
+kubectl logs -n <namespace> deployment/<controller> --tail=100
+
+# Watch controller metrics
+kubectl port-forward -n <namespace> deployment/<controller> 8080:8080
+curl localhost:8080/metrics | grep controller_reconcile
+
+# Check RBAC permissions
+kubectl auth can-i create pods --as=system:serviceaccount:<namespace>:<sa>
+
+# Verify webhooks are working
+kubectl get validatingwebhookconfigurations
+kubectl get mutatingwebhookconfigurations
+kubectl describe validatingwebhookconfiguration <name>
+
+# Test webhook manually
+kubectl create -f test-resource.yaml --dry-run=server -v=8
+# Look for webhook calls in verbose output
+
+# Check for finalizer issues
+kubectl get <resource> -o jsonpath='{.items[?(@.metadata.deletionTimestamp)].metadata.name}'
+# Resources stuck deleting
+```
+
+**Debugging Best Practices:**
+
+1. **Always check events first**
+   ```bash
+   kubectl get events -n <namespace> --sort-by='.lastTimestamp' | tail -20
+   ```
+
+2. **Use --previous flag for crashed containers**
+   ```bash
+   kubectl logs <pod> --previous
+   ```
+
+3. **Enable verbose logging temporarily**
+   ```bash
+   # Increase controller log level
+   kubectl set env deployment/<controller> LOG_LEVEL=debug
+   ```
+
+4. **Collect comprehensive diagnostics**
+   ```bash
+   # Must-gather script
+   kubectl cluster-info dump > cluster-dump.txt
+   kubectl get all -A > all-resources.txt
+   kubectl get events -A --sort-by='.lastTimestamp' > events.txt
+   ```
+
+5. **Use labels for filtering**
+   ```bash
+   kubectl logs -l app=nginx --tail=20 -n production
+   kubectl get pods -l app=nginx,env=prod
+   ```
+
+6. **Watch resources in real-time**
+   ```bash
+   kubectl get pods -w  # Watch mode
+   watch kubectl get pods  # Periodic refresh
+   ```
+
+7. **Export resources for offline analysis**
+   ```bash
+   kubectl get pod <name> -o yaml > pod.yaml
+   kubectl get pod <name> -o json | jq '.status' > status.json
+   ```
+
+**Common Pitfalls to Avoid:**
+
+1. Modifying production resources without backup
+   ```bash
+   # Always export first
+   kubectl get <resource> <name> -o yaml > backup.yaml
+   # Then edit
+   kubectl edit <resource> <name>
+   ```
+
+2. Not checking resource quotas
+   ```bash
+   kubectl describe resourcequota -n <namespace>
+   ```
+
+3. Ignoring limit ranges
+   ```bash
+   kubectl describe limitrange -n <namespace>
+   ```
+
+4. Not verifying RBAC before operations
+   ```bash
+   kubectl auth can-i <verb> <resource> -n <namespace>
+   ```
+
+5. Deleting namespaces with active resources
+   ```bash
+   # Check what's in namespace first
+   kubectl get all -n <namespace>
+   ```
 
 ### RKE2-Specific Issues
 
@@ -3054,21 +3997,57 @@ journalctl -u rke2-server | grep "etcd"
 25. **Q: Longhorn volume won't attach to pod. What do you check?**
     - A: Check volume state (`kubectl get volumes.longhorn.io`), node has space, engine/replica pods running, previous pod force-deleted, multi-attach error (RWO conflict), instance-manager healthy.
 
+**CRDs & API Versioning:**
+
+26. **Q: How do you safely deprecate a CRD field in production?**
+    - A: Add new field first (additive), support both old and new, mark old field as deprecated in documentation and API warnings, provide migration period (3+ releases), remove old field only after all users migrated. Never break existing users immediately.
+
+27. **Q: What's a conversion webhook and when do you need it?**
+    - A: Webhook that automatically converts between different API versions of a CRD. Needed when you have multiple served versions and need bidirectional conversion. Allows clients to use any version while storage uses one canonical version.
+
+28. **Q: Can you serve multiple API versions of a CRD simultaneously?**
+    - A: Yes. Set `served: true` for all versions you want to support. Only one can be `storage: true` (canonical version in etcd). API server converts between versions automatically (manually or via webhook).
+
+**Rancher & Extensions:**
+
+29. **Q: What's the difference between Rancher and RKE2?**
+    - A: RKE2 is a Kubernetes distribution (like kubeadm). Rancher is a multi-cluster management platform that can manage RKE2, EKS, AKS, GKE, etc. Rancher provides UI, RBAC, app catalog, monitoring across clusters.
+
+30. **Q: How does Rancher extend the Kubernetes API?**
+    - A: Adds CRDs for management constructs (clusters.management.cattle.io, projects.management.cattle.io, users.management.cattle.io). Runs cattle-cluster-agent in managed clusters. Provides REST API for management operations beyond K8s API.
+
+31. **Q: What is a Rancher Project and how does it differ from a namespace?**
+    - A: Project groups multiple namespaces with shared RBAC and resource quotas. Provides multi-tenancy abstraction. One project can contain many namespaces. Projects exist only in Rancher, not vanilla K8s.
+
+**Version Compatibility & Upgrades:**
+
+32. **Q: Can you upgrade from RKE2 v1.26 to v1.29 directly?**
+    - A: No. Never skip minor versions. Must upgrade sequentially: 1.26 → 1.27 → 1.28 → 1.29. Each upgrade requires testing, etcd backup, and checking for API deprecations/removals.
+
+33. **Q: What's the maximum version skew between control plane and worker nodes?**
+    - A: Workers can be up to 1 minor version behind control plane. If control plane is 1.28, workers can be 1.28 or 1.27. kubectl can be ±1 version. Never have workers newer than control plane.
+
+34. **Q: How do you check which Longhorn version is compatible with K8s 1.28?**
+    - A: Check Longhorn docs compatibility matrix. Longhorn 1.6.x supports K8s 1.21-1.29. Longhorn 1.5.x supports up to 1.27. Always verify CSI driver compatibility before upgrading either component.
+
+35. **Q: What API removals happened in Kubernetes 1.25?**
+    - A: PodSecurityPolicy (v1beta1) removed - migrate to Pod Security Standards. CronJob (v1beta1) removed - use batch/v1. HorizontalPodAutoscaler (v2beta1) removed - use autoscaling/v2.
+
 **Operations:**
 
-26. **Q: Describe the RKE2 upgrade process.**
+36. **Q: Describe the RKE2 upgrade process.**
     - A: Backup etcd. Upgrade control plane nodes one at a time (cordon, drain, stop service, install new version, start, uncordon). Then upgrade workers. Use system-upgrade-controller for automation.
 
-27. **Q: What's the recommended etcd backup strategy?**
+37. **Q: What's the recommended etcd backup strategy?**
     - A: Automatic snapshots every 12 hours, retention 5+, backup to S3 for DR, test restores regularly, backup before major changes (upgrades, large deployments).
 
-28. **Q: How do RKE2 certificates work?**
+38. **Q: How do RKE2 certificates work?**
     - A: Auto-generated on first start, stored in `/var/lib/rancher/rke2/server/tls/`, auto-rotated 90 days before expiry. Separate CAs for server, client, etcd. kubelet certificates signed and rotated.
 
-29. **Q: What ports does RKE2 require to be open?**
+39. **Q: What ports does RKE2 require to be open?**
     - A: 6443 (API), 9345 (supervisor), 2379-2380 (etcd), 10250 (kubelet), 8472 (VXLAN), 443/80 (ingress). Control plane needs all, workers need subset.
 
-30. **Q: How would you troubleshoot slow API responses?**
+40. **Q: How would you troubleshoot slow API responses?**
     - A: Check etcd performance (`etcdctl check perf`), disk I/O, etcd database size, API server logs, resource utilization (CPU/memory), network latency, watch stream count, large list operations.
 
 ---
