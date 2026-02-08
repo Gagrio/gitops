@@ -106,8 +106,8 @@ RKE2 is Rancher's next-generation Kubernetes distribution, designed for security
 
 | Feature | RKE2 | Vanilla K8s (kubeadm) |
 |---------|------|----------------------|
-| **Security** | CIS 1.6 compliant by default | Manual hardening required |
-| **Container Runtime** | containerd only | containerd/CRI-O |
+| **Security** | CIS 1.12 compliant by default (K8s 1.32+) | Manual hardening required |
+| **Container Runtime** | containerd 2.0 (RKE2 v1.32+) | containerd/CRI-O |
 | **Installation** | systemd service (like a distro) | Manual component setup |
 | **Architecture** | Server/Agent binary model | Separate component binaries |
 | **Pod Security** | Pod Security Standards enabled | Optional |
@@ -1611,6 +1611,12 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 
 ### Rancher-Architecture-Overview
 
+**Rancher Version Notes (February 2026):**
+- Latest stable: **Rancher v2.13.2**
+- Rancher 2.12.x+ requires Helm 3.18 or newer
+- **RKE1 reached End of Life on July 31, 2025** — Rancher 2.12.0+ cannot provision or manage RKE1 clusters
+- Migration path: RKE1 → RKE2 via Rancher migration tooling
+
 **Rancher vs RKE2:**
 
 - **RKE2**: Kubernetes distribution (like vanilla K8s, but secure by default)
@@ -1670,7 +1676,7 @@ metadata:
   name: my-rke2-cluster
   namespace: fleet-default
 spec:
-  kubernetesVersion: v1.28.5+rke2r1
+  kubernetesVersion: v1.34.3+rke2r1
   rkeConfig:
     machineGlobalConfig:
       cni: calico
@@ -2236,11 +2242,12 @@ Container Storage Interface - standard for exposing storage systems to container
 
 **What is Longhorn?**
 
-Cloud-native distributed block storage for Kubernetes:
+Cloud-native distributed block storage for Kubernetes (current stable: **v1.11.x**):
 - Replicated storage (high availability)
 - Snapshots and backups
 - Disaster recovery
 - Easy to use UI
+- **V2 Data Engine** (technical preview in v1.11): SPDK-based for improved IOPS and lower latency
 
 **Longhorn Architecture:**
 
@@ -2517,7 +2524,7 @@ Understanding version compatibility is critical for safe upgrades and troublesho
 **RKE2 Versioning Scheme:**
 
 ```
-v1.28.5+rke2r1
+v1.34.3+rke2r1
  │  │  │   │  └─ RKE2 release number (patch for RKE2-specific fixes)
  │  │  │   └──── RKE2 suffix
  │  │  └──────── Kubernetes patch version
@@ -2525,69 +2532,98 @@ v1.28.5+rke2r1
  └────────────── Major version
 ```
 
-**Kubernetes Version Support Matrix:**
+**Kubernetes Version Support Matrix (February 2026):**
 
-| RKE2 Release | K8s Versions Supported | Support Status | EOL Date |
-|--------------|------------------------|----------------|----------|
-| v1.29.x      | 1.29.0 - 1.29.x       | Active         | ~Oct 2024 |
-| v1.28.x      | 1.28.0 - 1.28.x       | Active         | ~Jul 2024 |
-| v1.27.x      | 1.27.0 - 1.27.x       | Maintenance    | ~Apr 2024 |
-| v1.26.x      | 1.26.0 - 1.26.x       | EOL            | Jan 2024 |
+| RKE2 Release | K8s Version | Support Status | EOL Date | Key Component Changes |
+|--------------|-------------|----------------|----------|-----------------------|
+| v1.35.x      | 1.35        | Active         | ~Dec 2026 | etcd 3.6, containerd 2.0 |
+| v1.34.x      | 1.34        | Active         | ~Aug 2026 | etcd 3.6.7, containerd 2.0 |
+| v1.33.x      | 1.33        | Active         | ~Jun 2026 | etcd 3.5.26, containerd 2.0 |
+| v1.32.x      | 1.32        | Maintenance    | Feb 28, 2026 | etcd 3.5.26, containerd 2.0 |
+| v1.31.x      | 1.31        | EOL            | Nov 2025 | etcd 3.5.x, containerd 1.7/2.0 |
 
 **Longhorn Version Compatibility:**
 
 | Longhorn Version | Kubernetes Versions | RKE2 Versions | Notes |
 |------------------|---------------------|---------------|-------|
-| v1.6.x          | 1.21 - 1.29         | All supported | Recommended for K8s 1.28+ |
-| v1.5.x          | 1.21 - 1.27         | v1.27 and older | CSI v1.8 support |
-| v1.4.x          | 1.21 - 1.25         | v1.25 and older | Legacy support |
+| v1.11.x         | 1.26 - 1.35         | v1.32+        | Latest stable, V2 Data Engine (preview) |
+| v1.10.x         | 1.25 - 1.34         | v1.31+        | Stable, production recommended |
+| v1.9.x          | 1.24 - 1.33         | v1.30+        | Previous stable |
+| v1.8.x          | 1.21 - 1.32         | v1.28-v1.32   | Legacy support only |
 
 **CNI Version Compatibility:**
 
 | CNI Plugin | RKE2 Version | Kubernetes | Notes |
 |------------|--------------|------------|-------|
 | Canal      | All RKE2     | All K8s    | Default, Calico + Flannel |
-| Calico v3.27 | v1.28+     | 1.26+      | Standalone mode |
-| Calico v3.26 | v1.27+     | 1.25+      | Legacy |
+| Calico v3.31 | v1.34+     | 1.32+      | Latest stable |
+| Calico v3.29 | v1.33+     | 1.31+      | Previous stable |
 | Flannel    | All RKE2     | All K8s    | Simple overlay |
-| Cilium v1.14 | v1.28+     | 1.26+      | Advanced features |
+| Cilium v1.18 | v1.34+     | 1.32+      | Advanced features, bundled in v1.34 |
+| Cilium v1.16 | v1.32+     | 1.30+      | Previous stable |
 
 **Upgrade Path Decision Tree:**
 
 ```
-Current: RKE2 v1.26.10+rke2r1 (K8s 1.26)
-Target:  RKE2 v1.29.2+rke2r1 (K8s 1.29)
+Current: RKE2 v1.32.11+rke2r1 (K8s 1.32, etcd 3.5.26, containerd 2.0)
+Target:  RKE2 v1.35.2+rke2r1 (K8s 1.35, etcd 3.6, containerd 2.0)
 
 Can I upgrade directly?
 ├─ NO - Never skip minor versions
 │
 └─ Safe upgrade path:
-   1. v1.26.10 → v1.27.10+rke2r1  (First upgrade to latest 1.27)
+   1. v1.32.11 → v1.33.7+rke2r1  (First upgrade to latest 1.33)
+      - Check: etcd 3.5.26 present ✓ (CRITICAL for next step)
       - Check: Longhorn compatibility ✓
       - Check: CNI compatibility ✓
+      - Check: Endpoints API deprecated (migrate to EndpointSlices)
       - Test in staging
       - Backup etcd
       - Upgrade
 
-   2. v1.27.10 → v1.28.8+rke2r1   (Then to latest 1.28)
-      - Check: API deprecations (v1beta1 CronJob removed!)
-      - Update manifests
+   2. v1.33.7 → v1.34.3+rke2r1   (Upgrade to 1.34)
+      ⚠️ CRITICAL: This upgrades etcd 3.5.26 → 3.6.7
+      - Verify etcd 3.5.26 BEFORE proceeding (see migration warning below)
+      - Check: API deprecations
       - Test in staging
       - Backup etcd
       - Upgrade
+      - Verify etcd cluster health post-upgrade
 
-   3. v1.28.8 → v1.29.2+rke2r1    (Finally to target)
-      - Check: New features/changes
+   3. v1.34.3 → v1.35.2+rke2r1   (Finally to target)
+      - Check: In-place pod resize now GA
       - Test in staging
       - Backup etcd
       - Upgrade
+```
+
+**⚠️ CRITICAL: etcd 3.6 Migration (RKE2 v1.34+)**
+
+RKE2 v1.34 and v1.35 ship etcd v3.6, which has **no safe direct upgrade path from etcd 3.5.x prior to 3.5.26**. Failure to follow the correct path can cause zombie members, loss of quorum, and complete cluster failure.
+
+```bash
+# BEFORE upgrading to RKE2 v1.34, verify etcd version:
+/var/lib/rancher/rke2/bin/etcdctl version
+# MUST show etcd Version: 3.5.26 or later
+
+# Required upgrade path for etcd 3.6:
+# RKE2 v1.31 (etcd 3.5.x) → v1.32/v1.33 (etcd 3.5.26) → v1.34 (etcd 3.6.7)
+# NEVER skip the intermediate step!
+
+# After upgrading to v1.34, verify etcd health:
+/var/lib/rancher/rke2/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt \
+  --cert=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt \
+  --key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key \
+  endpoint health --cluster
 ```
 
 **Component Version Dependencies:**
 
 ```bash
 # Check what versions are running
-kubectl version --short
+kubectl version
 kubectl get nodes -o wide
 
 # Check Longhorn version
@@ -2597,23 +2633,45 @@ kubectl get settings.longhorn.io -n longhorn-system -o yaml | grep current-longh
 kubectl get pods -n kube-system -l k8s-app=calico-node -o jsonpath='{.items[0].spec.containers[0].image}'
 
 # Check containerd version (RKE2 bundles specific version)
+# RKE2 v1.32+: containerd 2.0
+# RKE2 v1.30-v1.31: containerd 1.7.23
 crictl version
 
-# Check etcd version
+# Check etcd version (CRITICAL before upgrades to v1.34+)
+# RKE2 v1.34+: etcd 3.6.7
+# RKE2 v1.32-v1.33: etcd 3.5.26
 /var/lib/rancher/rke2/bin/etcdctl version
 ```
+
+**RKE2 v1.34 Bundled Components (reference):**
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| Kubernetes | 1.34.3 | Core orchestration |
+| etcd | 3.6.7 | ⚠️ Major upgrade from 3.5.x |
+| containerd | 2.0 | Bundled since v1.32 |
+| CoreDNS | 1.12.x | Cluster DNS |
+| Calico | 3.31.2 | Network policy (Canal default) |
+| Cilium | 1.18.6 | Alternative CNI option |
+| Traefik | 3.6.7 | Default ingress controller |
+| ingress-nginx | 1.14.3-hardened1 | Alternative ingress |
+| metrics-server | latest | Resource metrics |
 
 **API Version Deprecations:**
 
 Kubernetes deprecates API versions over time. Know what's removed in each version:
 
-| Kubernetes Version | API Removals | Action Required |
-|--------------------|--------------|-----------------|
-| 1.25 | PodSecurityPolicy (v1beta1) | Migrate to Pod Security Standards |
-| 1.25 | CronJob (v1beta1) | Update to batch/v1 |
-| 1.26 | HorizontalPodAutoscaler (v2beta2) | Update to autoscaling/v2 |
-| 1.27 | storage.k8s.io/v1beta1 CSIStorageCapacity | Update to storage.k8s.io/v1 |
-| 1.29 | flowcontrol.apiserver.k8s.io/v1beta2 | Update to v1beta3 |
+| Kubernetes Version | API Removals/Changes | Action Required |
+|--------------------|----------------------|-----------------|
+| 1.25 | PodSecurityPolicy (v1beta1) removed | Migrate to Pod Security Standards |
+| 1.25 | CronJob (v1beta1) removed | Update to batch/v1 |
+| 1.26 | HorizontalPodAutoscaler (v2beta2) removed | Update to autoscaling/v2 |
+| 1.27 | storage.k8s.io/v1beta1 CSIStorageCapacity removed | Update to storage.k8s.io/v1 |
+| 1.29 | flowcontrol.apiserver.k8s.io/v1beta2 removed | Update to v1beta3 |
+| 1.32 | flowcontrol.apiserver.k8s.io/v1beta3 removed | Update to flowcontrol/v1 |
+| 1.33 | Endpoints API deprecated (warnings emitted) | Migrate to EndpointSlices |
+| 1.33 | status.nodeInfo.kubeProxyVersion removed | Remove dependencies on this field |
+| 1.33 | nftables kube-proxy backend GA | Consider migrating from iptables |
 
 **Pre-Upgrade Checklist:**
 
@@ -2628,7 +2686,7 @@ pluto detect-helm -o wide
 # 3. Check cluster health
 kubectl get nodes
 kubectl get pods -A | grep -v Running
-kubectl get componentstatuses  # Deprecated but useful
+kubectl get --raw='/readyz?verbose'  # Replaced componentstatuses (removed in 1.29)
 
 # 4. Backup etcd
 rke2 etcd-snapshot save --name pre-upgrade-$(date +%Y%m%d)
@@ -2638,8 +2696,30 @@ rke2 etcd-snapshot ls
 
 # 6. Document current state
 kubectl get nodes -o yaml > nodes-pre-upgrade.yaml
-kubectl version --short > versions-pre-upgrade.txt
+kubectl version -o yaml > versions-pre-upgrade.txt
 ```
+
+**Notable Kubernetes Features (1.30-1.35):**
+
+Features relevant to RKE2 operations and interviews:
+
+| K8s Version | Feature | Status | Impact |
+|-------------|---------|--------|--------|
+| 1.31 | AppArmor support | GA | Container security profiles in pod spec |
+| 1.32 | Dynamic Resource Allocation (DRA) | GA | Standardized GPU/hardware allocation |
+| 1.32 | PVC auto-cleanup for StatefulSets | GA | Automatic PVC deletion on StatefulSet scale-down |
+| 1.33 | **Sidecar containers** | GA | Native init containers with `restartPolicy: Always` |
+| 1.33 | **nftables kube-proxy backend** | GA | Replaces iptables, better performance at scale |
+| 1.33 | Volume populators | GA | Pre-populate volumes from custom data sources |
+| 1.33 | Topology-aware routing | GA | `trafficDistribution: PreferClose` for zone-local traffic |
+| 1.33 | Endpoints API | Deprecated | Migrate to EndpointSlices |
+| 1.34 | Minimal breaking changes | — | Good upgrade target |
+| 1.35 | **In-place pod resize** | GA | Resize CPU/memory without pod restart |
+| 1.35 | Fine-grained supplemental groups | GA | Better security for shared storage |
+
+**Key takeaway**: K8s 1.33 is a landmark release (sidecar containers, nftables, EndpointSlices migration). K8s 1.35 brings in-place pod resize GA which changes how vertical scaling works.
+
+---
 
 **Longhorn Upgrade Strategy:**
 
@@ -2657,7 +2737,7 @@ kubectl get settings.longhorn.io -n longhorn-system current-longhorn-version
 helm repo update
 helm upgrade longhorn longhorn/longhorn \
   --namespace longhorn-system \
-  --version 1.6.0
+  --version 1.11.0
 
 # 5. Wait for rollout
 kubectl rollout status deployment/longhorn-driver-deployer -n longhorn-system
@@ -2673,20 +2753,20 @@ kubectl get settings.longhorn.io -n longhorn-system current-longhorn-version
 Kubernetes has strict version skew policies:
 
 ```
-Control Plane: v1.28.5
-Worker Nodes:  v1.28.x or v1.27.x (max -1 minor version)
-kubectl:       v1.29.x, v1.28.x, or v1.27.x (±1 minor version)
+Control Plane: v1.34.3
+Worker Nodes:  v1.34.x or v1.33.x (max -1 minor version)
+kubectl:       v1.35.x, v1.34.x, or v1.33.x (±1 minor version)
 ```
 
-If your control plane is v1.28, you can have:
-- Worker nodes on v1.28 or v1.27
-- kubectl on v1.29, v1.28, or v1.27
+If your control plane is v1.34, you can have:
+- Worker nodes on v1.34 or v1.33
+- kubectl on v1.35, v1.34, or v1.33
 
 **Knowledge Check:**
 
-1. Can you upgrade from RKE2 v1.26 to v1.29 directly?
+1. Can you upgrade from RKE2 v1.32 to v1.35 directly?
 2. What happens if you use a deprecated API after it's removed?
-3. How do you check which Longhorn version is compatible with K8s 1.28?
+3. Why is the etcd 3.5 → 3.6 upgrade path critical when moving to RKE2 v1.34?
 4. What's the maximum version skew allowed between control plane and workers?
 5. Name three things you must do before upgrading a production cluster.
 
@@ -2700,7 +2780,7 @@ RKE2 uses a rolling upgrade approach managed via systemd or Rancher.
 
 ```bash
 # Check current version
-kubectl version --short
+kubectl version
 /usr/local/bin/rke2 --version
 
 # Upgrade process (one node at a time)
@@ -2715,7 +2795,7 @@ kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
 systemctl stop rke2-server  # or rke2-agent
 
 # 4. Update RKE2 binary
-curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=v1.28.5+rke2r1 sh -
+curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=v1.34.3+rke2r1 sh -
 
 # 5. Start RKE2
 systemctl start rke2-server  # or rke2-agent
@@ -2755,7 +2835,7 @@ spec:
   serviceAccountName: system-upgrade
   upgrade:
     image: rancher/rke2-upgrade
-  version: v1.28.5+rke2r1
+  version: v1.34.3+rke2r1
 ---
 apiVersion: upgrade.cattle.io/v1
 kind: Plan
@@ -2777,7 +2857,7 @@ spec:
   serviceAccountName: system-upgrade
   upgrade:
     image: rancher/rke2-upgrade
-  version: v1.28.5+rke2r1
+  version: v1.34.3+rke2r1
 EOF
 
 # Watch upgrade progress
@@ -2793,7 +2873,8 @@ kubectl logs -n system-upgrade -l upgrade.cattle.io/plan=server-plan
 3. Upgrade one control plane node at a time
 4. Test in staging environment first
 5. Read release notes for breaking changes
-6. Upgrade one minor version at a time (1.27 → 1.28 → 1.29, not 1.27 → 1.29)
+6. Upgrade one minor version at a time (1.32 → 1.33 → 1.34, not 1.32 → 1.34)
+7. **Before upgrading to v1.34+**: Verify etcd is on v3.5.26 (see etcd 3.6 migration warning above)
 
 ### Backup-Disaster-Recovery
 
@@ -3915,7 +3996,7 @@ journalctl -u rke2-server | grep "etcd"
 **RKE2 Architecture:**
 
 1. **Q: Explain the difference between RKE2 and vanilla Kubernetes.**
-   - A: RKE2 packages K8s components into a single binary (rke2-server/agent) managed by systemd, includes embedded etcd, is CIS-hardened by default, uses containerd only, and provides security features out-of-the-box (PSS, network policies).
+   - A: RKE2 packages K8s components into a single binary (rke2-server/agent) managed by systemd, includes embedded etcd, is CIS 1.12 hardened by default, uses containerd 2.0 (as of v1.32+), and provides security features out-of-the-box (PSS, network policies). Current stable releases track K8s 1.32-1.35.
 
 2. **Q: How does RKE2 achieve high availability?**
    - A: Multiple server nodes (3 or 5) each run embedded etcd forming a cluster. API requests are load-balanced across servers. etcd uses Raft consensus requiring majority quorum. If one server fails, others continue operating.
@@ -3992,7 +4073,7 @@ journalctl -u rke2-server | grep "etcd"
     - A: Stop all rke2-server instances. On first server: `rke2 server --cluster-reset --cluster-reset-restore-path=<snapshot>`. Start first server. Verify. On other servers: remove `/var/lib/rancher/rke2/server/db/`, restart to rejoin.
 
 24. **Q: Service not accessible from pods. Debug steps?**
-    - A: Check service exists, has endpoints (`kubectl get endpoints`), labels match pods, test from pod (`curl <service>`), verify network policies, check kube-proxy logs, iptables rules for service.
+    - A: Check service exists, has endpoints (`kubectl get endpointslices`), labels match pods, test from pod (`curl <service>`), verify network policies, check kube-proxy logs, iptables/nftables rules for service. Note: Endpoints API is deprecated in K8s 1.33+, use EndpointSlices instead.
 
 25. **Q: Longhorn volume won't attach to pod. What do you check?**
     - A: Check volume state (`kubectl get volumes.longhorn.io`), node has space, engine/replica pods running, previous pod force-deleted, multi-attach error (RWO conflict), instance-manager healthy.
@@ -4011,7 +4092,7 @@ journalctl -u rke2-server | grep "etcd"
 **Rancher & Extensions:**
 
 29. **Q: What's the difference between Rancher and RKE2?**
-    - A: RKE2 is a Kubernetes distribution (like kubeadm). Rancher is a multi-cluster management platform that can manage RKE2, EKS, AKS, GKE, etc. Rancher provides UI, RBAC, app catalog, monitoring across clusters.
+    - A: RKE2 is a Kubernetes distribution (like kubeadm). Rancher (current: v2.13.2) is a multi-cluster management platform that can manage RKE2, EKS, AKS, GKE, etc. Rancher provides UI, RBAC, app catalog, monitoring across clusters. Note: RKE1 reached EOL July 2025; Rancher 2.12+ only supports RKE2.
 
 30. **Q: How does Rancher extend the Kubernetes API?**
     - A: Adds CRDs for management constructs (clusters.management.cattle.io, projects.management.cattle.io, users.management.cattle.io). Runs cattle-cluster-agent in managed clusters. Provides REST API for management operations beyond K8s API.
@@ -4021,17 +4102,17 @@ journalctl -u rke2-server | grep "etcd"
 
 **Version Compatibility & Upgrades:**
 
-32. **Q: Can you upgrade from RKE2 v1.26 to v1.29 directly?**
-    - A: No. Never skip minor versions. Must upgrade sequentially: 1.26 → 1.27 → 1.28 → 1.29. Each upgrade requires testing, etcd backup, and checking for API deprecations/removals.
+32. **Q: Can you upgrade from RKE2 v1.32 to v1.35 directly?**
+    - A: No. Never skip minor versions. Must upgrade sequentially: 1.32 → 1.33 → 1.34 → 1.35. Critical: the 1.33→1.34 step upgrades etcd from 3.5.26 to 3.6.7 — verify etcd version before proceeding.
 
 33. **Q: What's the maximum version skew between control plane and worker nodes?**
-    - A: Workers can be up to 1 minor version behind control plane. If control plane is 1.28, workers can be 1.28 or 1.27. kubectl can be ±1 version. Never have workers newer than control plane.
+    - A: Workers can be up to 1 minor version behind control plane. If control plane is 1.34, workers can be 1.34 or 1.33. kubectl can be ±1 version. Never have workers newer than control plane.
 
-34. **Q: How do you check which Longhorn version is compatible with K8s 1.28?**
-    - A: Check Longhorn docs compatibility matrix. Longhorn 1.6.x supports K8s 1.21-1.29. Longhorn 1.5.x supports up to 1.27. Always verify CSI driver compatibility before upgrading either component.
+34. **Q: What is the etcd 3.6 migration risk and how do you mitigate it?**
+    - A: RKE2 v1.34+ ships etcd 3.6. Upgrading from etcd <3.5.26 directly to 3.6 can cause zombie members and loss of quorum. Mitigation: upgrade to RKE2 v1.32/v1.33 first (which includes etcd 3.5.26), verify with `etcdctl version`, then proceed to v1.34.
 
-35. **Q: What API removals happened in Kubernetes 1.25?**
-    - A: PodSecurityPolicy (v1beta1) removed - migrate to Pod Security Standards. CronJob (v1beta1) removed - use batch/v1. HorizontalPodAutoscaler (v2beta1) removed - use autoscaling/v2.
+35. **Q: What major API changes happened in Kubernetes 1.32-1.33?**
+    - A: K8s 1.32: flowcontrol v1beta3 removed (use v1). K8s 1.33: Endpoints API deprecated (use EndpointSlices), nftables kube-proxy backend GA, sidecar containers GA, nodeInfo.kubeProxyVersion field removed.
 
 **Operations:**
 
@@ -4039,7 +4120,7 @@ journalctl -u rke2-server | grep "etcd"
     - A: Backup etcd. Upgrade control plane nodes one at a time (cordon, drain, stop service, install new version, start, uncordon). Then upgrade workers. Use system-upgrade-controller for automation.
 
 37. **Q: What's the recommended etcd backup strategy?**
-    - A: Automatic snapshots every 12 hours, retention 5+, backup to S3 for DR, test restores regularly, backup before major changes (upgrades, large deployments).
+    - A: Automatic snapshots every 12 hours, retention 5+, backup to S3 for DR, test restores regularly, backup before major changes (upgrades, large deployments). **Critical for v1.34+ upgrades**: always have a verified backup before the etcd 3.5→3.6 migration.
 
 38. **Q: How do RKE2 certificates work?**
     - A: Auto-generated on first start, stored in `/var/lib/rancher/rke2/server/tls/`, auto-rotated 90 days before expiry. Separate CAs for server, client, etcd. kubelet certificates signed and rotated.
