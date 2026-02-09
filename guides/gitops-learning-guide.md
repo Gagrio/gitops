@@ -1,4 +1,4 @@
-# GitOps Interview Prep - Hands-On Learning Plan
+# GitOps Learning Guide - Hands-On Learning Plan
 
 **Timeline**: 2 days focused, hands-on learning
 **Goal**: Refresh knowledge through experimentation, not theory
@@ -18,8 +18,8 @@
    - Helm
    - GitHub Actions
 4. [Troubleshooting Scenarios](#troubleshooting-scenarios)
-5. [Quick Command Reference](#quick-command-reference-for-interview-day)
-6. [Final Prep Checklist](#final-prep-checklist)
+5. [Quick Command Reference](#quick-command-reference)
+6. [Final Checklist](#final-checklist)
 
 ---
 
@@ -227,7 +227,7 @@ Test yourself by running these commands and explaining the output:
 - [ ] **Remote state**: Where is state stored? Check `bootstrap/main.tf` for GCS backend config
 - [ ] **Count vs for_each**: Where do you use `for_each`? Check `bootstrap/main.tf`
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: How do you handle Terraform state in a team environment?**
 - Check: `/Users/geoagriogiannis/Documents/GitHub/gitops/terraform/bootstrap/main.tf`
@@ -378,7 +378,7 @@ echo "To upgrade: gcloud container clusters upgrade CLUSTER --node-pool=primary-
 - [ ] **Auto-repair/upgrade**: Check node pool config - what do these do?
 - [ ] **Deletion Protection**: Why is it `false` in your cluster? When should it be `true`?
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: How does GKE authentication work with kubectl?**
 ```bash
@@ -575,7 +575,7 @@ kubectl get deployment -n monitoring prometheus-server -o jsonpath='{.spec.selec
 - [ ] **Probes**: Readiness vs Liveness vs Startup. Check: `kubectl describe pod` in monitoring
 - [ ] **Init Containers**: Do any pods use them? Check: `kubectl get pods -A -o jsonpath='{.items[*].spec.initContainers}' | jq`
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: How do you troubleshoot a pod that won't start?**
 ```bash
@@ -895,7 +895,7 @@ kubectl delete helmrelease broken -n monitoring
 - [ ] **Health Checks**: How does Flux determine if a HelmRelease is healthy? Check: `kubectl describe hr -n monitoring`
 - [ ] **Pruning**: What happens to resources when you remove them from Git? Check: gotk-sync.yaml line 24
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: How does Flux differ from ArgoCD?**
 - Your answer should mention: Kubernetes-native CRDs, pull vs push, multi-tenancy, image automation
@@ -1181,7 +1181,7 @@ helm template test /tmp/mychart --set replicaCount=3
 - [ ] **Release State**: Where does Helm store release info? Check: `kubectl get secrets -n monitoring -l owner=helm`
 - [ ] **Helm vs Kubectl**: When would you use one over the other?
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: How does Helm handle upgrades and rollbacks?**
 ```bash
@@ -1537,7 +1537,7 @@ jobs:
       - run: terraform apply tfplan
 ```
 
-#### Interview Questions to Practice
+#### Practice Questions
 
 **Q: Walk me through your CI/CD pipeline for infrastructure changes.**
 ```
@@ -1559,7 +1559,7 @@ Answer:
 - For more security: use OIDC with cloud providers instead of static keys
 ```
 
-**Q: How would you implement PR-based infrastructure review?**
+**Q: How would you implement pull request-based infrastructure review?**
 ```
 Answer:
 - Trigger on pull_request
@@ -1876,7 +1876,7 @@ terraform state push terraform.tfstate.backup
 
 ---
 
-## Quick Command Reference for Interview Day
+## Quick Command Reference
 
 ### Terraform
 ```bash
@@ -1946,9 +1946,9 @@ gh run watch RUN_ID
 ```
 
 ---
-## Final Prep Checklist
+## Final Checklist
 
-**Day Before Interview:**
+**Day Before Practice:**
 - [ ] Run `terraform plan` - make sure you understand every resource
 - [ ] Run `flux get all` - explain what each resource does
 - [ ] Run `helm list -A` - explain each release
@@ -1956,7 +1956,7 @@ gh run watch RUN_ID
 - [ ] Check cluster health: `kubectl get nodes; kubectl get pods -A`
 - [ ] Review this doc and mark anything you couldn't explain
 
-**Interview Day:**
+**Practice Day:**
 - [ ] Have kubeconfig connected to cluster
 - [ ] Have GCP credentials active
 - [ ] Have repo cloned and ready
