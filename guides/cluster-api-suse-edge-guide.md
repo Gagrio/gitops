@@ -4,11 +4,15 @@
 - Cluster API: v1.12 (February 2026)
 - SUSE Edge: 3.5
 - Kubernetes: 1.29-1.35 (workload), 1.31-1.35 (management)
-- RKE2: v1.34.3+rke2r1
-- Metal3: v1.8
-- Rancher Turtles: v0.14
+- RKE2: v1.34.2+rke2r1
+- K3s: v1.34.2+k3s1
+- Metal3: v1.8 (installed via SUSE Edge Helm charts)
+- Rancher Turtles: Installed via SUSE Edge (version varies by release)
+- Edge Image Builder: 1.3.2
 
 **Last Updated:** February 2026
+
+**Note on versions:** Specific component versions for Metal3 and Rancher Turtles are managed by SUSE Edge releases and installed via Helm charts from registry.suse.com/edge/. Refer to official SUSE Edge 3.5 documentation for exact versions.
 
 ---
 
@@ -393,7 +397,7 @@ Generate 500 clusters from this template with GitOps automation.
 
 ### CAPI-and-SUSE-Edge-Together
 
-SUSE Edge leverages Cluster API to solve edge-specific challenges:
+SUSE Edge integrates Cluster API with Metal3 to enable scalable bare metal cluster provisioning for edge deployments:
 
 **Edge challenges addressed:**
 
@@ -403,34 +407,38 @@ SUSE Edge leverages Cluster API to solve edge-specific challenges:
 4. **Lifecycle:** Automated updates across fleet without site visits
 5. **Resilience:** Declarative recovery from failures
 
-**SUSE Edge + CAPI architecture:**
+**SUSE Edge with CAPI/Metal3 architecture:**
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │  Central Management Cluster (Data Center)              │
 │  ┌──────────────────────────────────────────────────┐  │
-│  │  CAPI + SUSE Edge Stack                          │  │
+│  │  SUSE Edge Management Stack                      │  │
+│  │  - Rancher Multi-Cluster Manager                 │  │
 │  │  - Cluster API controllers                       │  │
 │  │  - RKE2 bootstrap/control-plane providers        │  │
-│  │  - Metal3 infrastructure provider (bare metal)   │  │
-│  │  - Rancher Turtles (optional Rancher integration)│  │
+│  │  - Metal3 infrastructure provider                │  │
+│  │  - Rancher Turtles (CAPI ↔ Rancher bridge)      │  │
 │  │  - Fleet GitOps (cluster fleet management)       │  │
 │  └──────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────┘
-                         ↓
-                         ↓ manages
-                         ↓
+                       ↓
+                 Direct BMC Access
+                  (Metal3/CAPI)
+                       ↓
 ┌────────────────────────────────────────────────────────┐
-│  Edge Locations (Stores, Factories, Cell Towers, etc.) │
+│  Edge Locations (Telco Sites, Data Centers, etc.)      │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
-│  │ Edge Site 1 │  │ Edge Site 2 │  │ Edge Site N │   │
+│  │ Edge Site 1 │  │ Edge Site 2 │  │ Edge Site 3 │   │
 │  │ RKE2/K3s    │  │ RKE2/K3s    │  │ RKE2/K3s    │   │
-│  │ SLE Micro OS│  │ SLE Micro OS│  │ SLE Micro OS│   │
+│  │ SLE Micro   │  │ SLE Micro   │  │ SLE Micro   │   │
 │  └─────────────┘  └─────────────┘  └─────────────┘   │
 └────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** SUSE Edge turns Cluster API into a complete edge computing platform by adding enterprise-grade OS (SLE Micro), lightweight Kubernetes (RKE2/K3s), and operational tooling (Fleet, Rancher).
+**Key insight:** This guide focuses on SUSE Edge's Cluster API integration with Metal3 for bare metal provisioning. SUSE Edge also supports other provisioning methods (Elemental for phone-home registration, Edge Image Builder for air-gapped deployments) - see SUSE Edge documentation for those workflows.
+
+SUSE Edge combines enterprise-grade OS (SLE Micro), lightweight Kubernetes (RKE2/K3s), and operational tooling (Fleet, Rancher) for comprehensive edge management.
 
 [↑ Back to ToC](#table-of-contents)
 
@@ -1335,6 +1343,51 @@ SUSE Edge: Complete edge platform
            Optimized for edge constraints
 ```
 
+### SUSE-Edge-Provisioning-Methods
+
+SUSE Edge supports three distinct provisioning approaches, each optimized for different deployment scenarios:
+
+#### 1-Directed-Network-Provisioning-(CAPI-+-Metal3)
+
+**What it is:** Fully automated provisioning from a centralized location when you have direct access to bare-metal hardware management interfaces.
+
+**How it works:**
+- Management cluster has out-of-band access to server BMCs (Redfish/IPMI)
+- Metal3 discovers and inventories bare-metal servers
+- CAPI orchestrates cluster provisioning declaratively
+- Zero-touch deployment once hardware is racked and cabled
+
+**Best suited for:**
+- Data center deployments with BMC-equipped servers
+- Controlled environments with network management access
+- Telecommunications infrastructure with known hardware inventory
+- Regulated industries requiring full automation and audit trails
+
+**Example use cases:**
+- 5G edge compute nodes in telecom networks
+- Edge data centers with standardized hardware
+- Manufacturing facilities with IT-managed infrastructure
+
+```
+┌─────────────────────────────────────────────┐
+│     Management Cluster (Data Center)        │
+│  ┌───────────────────────────────────────┐  │
+│  │  CAPI + Metal3 + Rancher Turtles     │  │
+│  └───────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+                  ↓
+          Direct BMC Access (Redfish)
+                  ↓
+┌─────────────────────────────────────────────┐
+│     Edge Sites with BMC-enabled servers     │
+│  ┌───────┐  ┌───────┐  ┌───────┐           │
+│  │Server1│  │Server2│  │Server3│           │
+│  │+ BMC  │  │+ BMC  │  │+ BMC  │           │
+│  └───────┘  └───────┘  └───────┘           │
+└─────────────────────────────────────────────┘
+```
+
+
 ### Use-Cases-Beyond-Telco
 
 #### 1-Retail-Edge
@@ -1348,54 +1401,28 @@ SUSE Edge: Complete edge platform
 - Resilient to network outages
 - Low hardware footprint
 
-**SUSE Edge solution:**
+**SUSE Edge with CAPI solution:**
 
 ```yaml
-# ClusterClass for retail stores
+# ClusterClass-based deployment for retail edge
 apiVersion: cluster.x-k8s.io/v1beta1
-kind: ClusterClass
+kind: Cluster
 metadata:
-  name: retail-store-edge
+  name: retail-store-001
+  namespace: retail-fleet
 spec:
-  controlPlane:
-    ref:
-      apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-      kind: RKE2ControlPlaneTemplate
-      name: retail-control-plane
-    machineInfrastructure:
-      ref:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: Metal3MachineTemplate
-        name: retail-nuc-machines  # Intel NUC form factor
-  variables:
-  - name: storeId
-    required: true
-    schema:
-      openAPIV3Schema:
-        type: string
-  - name: region
-    required: true
-  - name: updateWindow
-    schema:
-      openAPIV3Schema:
-        type: string
-        default: "02:00-04:00"  # 2-4 AM local time
-```
-
-**Deployment:**
-
-```bash
-# Generate cluster manifests for all stores
-for store in $(cat store-list.txt); do
-  clusterctl generate cluster store-${store} \
-    --infrastructure metal3 \
-    --control-plane-machine-count 1 \
-    --worker-machine-count 2 \
-    --target-namespace retail-edge \
-    --from clusterclass retail-store-edge \
-    --set storeId=${store} \
-    --set region=$(get-store-region ${store})
-done
+  topology:
+    class: retail-edge
+    version: v1.35.0
+    workers:
+      machineDeployments:
+      - class: retail-worker
+        replicas: 2
+    variables:
+    - name: storeId
+      value: "STORE-001"
+    - name: region
+      value: "us-west"
 ```
 
 #### 2-Manufacturing-Edge
@@ -1409,14 +1436,15 @@ done
 - Ruggedized hardware support
 - Strict change control
 
-**SUSE Edge solution:**
+**SUSE Edge with CAPI solution:**
 
 ```yaml
-# Air-gapped configuration
+# Air-gapped configuration for manufacturing
 apiVersion: cluster.x-k8s.io/v1beta1
 kind: Cluster
 metadata:
   name: factory-zone-1
+  namespace: manufacturing
 spec:
   topology:
     class: manufacturing-edge
@@ -1432,19 +1460,6 @@ spec:
       value: ""  # No proxy in air-gapped
 ```
 
-**Image-based deployment:**
-
-```bash
-# Create bootable image with embedded cluster config
-edge-image-builder \
-  --definition manufacturing-zone.yaml \
-  --output factory-zone-1.iso
-
-# Copy ISO to factory via secure transfer
-# Boot bare metal servers from ISO
-# Cluster automatically provisions using embedded Metal3 BareMetalHost configs
-```
-
 #### 3-Energy-and-Utilities
 
 **Scenario:** 500 solar farms and wind turbines, each needs Kubernetes for monitoring, predictive maintenance, grid integration.
@@ -1456,7 +1471,7 @@ edge-image-builder \
 - Compliance requirements (NERC CIP)
 - Remote management
 
-**SUSE Edge solution:**
+**SUSE Edge with CAPI solution:**
 
 ```yaml
 # Resilient configuration for intermittent connectivity
@@ -1464,9 +1479,11 @@ apiVersion: cluster.x-k8s.io/v1beta1
 kind: Cluster
 metadata:
   name: solar-farm-tx-001
+  namespace: energy-fleet
 spec:
   topology:
     class: energy-edge
+    version: v1.35.0
     variables:
     - name: offlineMode
       value: "true"  # Tolerate mgmt cluster disconnect
@@ -1486,26 +1503,26 @@ spec:
 - Multi-tenancy (building management + tenant apps)
 - Automated provisioning by contractors
 
-**SUSE Edge solution:**
+**SUSE Edge with CAPI solution:**
 
 ```yaml
 # Minimal footprint with K3s
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-kind: K3sConfigTemplate
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
 metadata:
-  name: building-bootstrap
+  name: building-downtown-01
+  namespace: smart-buildings
 spec:
-  template:
-    spec:
-      agentConfig:
-        kubeletArgs:
-        - "max-pods=50"  # Limit for small hardware
-        - "kube-reserved=cpu=100m,memory=256Mi"
-      serverConfig:
-        disable:
-        - traefik  # Use customer's existing LB
-        datastore:
-          endpoint: "embedded"  # SQLite, not etcd
+  topology:
+    class: building-edge-k3s
+    version: v1.35.0
+    variables:
+    - name: buildingId
+      value: "BLDG-DT-01"
+    - name: maxPods
+      value: "50"
+    - name: datastoreType
+      value: "embedded"  # SQLite for small deployments
 ```
 
 ### SUSE-Edge-Component-Stack
@@ -1514,7 +1531,7 @@ spec:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Management Layer                         │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │  Rancher Multi-Cluster Manager (Optional)             │  │
+│  │  Rancher Multi-Cluster Manager                        │  │
 │  │  - Web UI                                             │  │
 │  │  - RBAC                                               │  │
 │  │  - App Catalog                                        │  │
@@ -1527,10 +1544,10 @@ spec:
 │  │  - Multi-cluster deployment                           │  │
 │  └───────────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │  Cluster API + Providers                              │  │
-│  │  - Core CAPI controllers                              │  │
-│  │  - CAPRKE2 (RKE2 provider)                            │  │
-│  │  - Metal3 (bare metal provider)                       │  │
+│  │  Cluster API Provisioning (CAPI + Metal3)             │  │
+│  │  - Cluster API controllers                            │  │
+│  │  - CAPRKE2/CAPK3s (RKE2/K3s providers)                │  │
+│  │  - Metal3 (bare metal infrastructure provider)        │  │
 │  │  - Rancher Turtles (CAPI ↔ Rancher bridge)           │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
@@ -1608,26 +1625,28 @@ spec:
 - **RKE2:** Production edge deployments, compliance requirements, >2GB RAM
 - **K3s:** Development, testing, extreme constraints (<2GB RAM), single-node
 
-### Why-CAPI-for-SUSE-Edge
+### Why-CAPI-and-Metal3-for-Edge
 
-SUSE Edge uses Cluster API as its declarative lifecycle management layer for several reasons:
+SUSE Edge integrates Cluster API with Metal3 to provide declarative, scalable bare metal provisioning:
 
-1. **Scale:** Managing 1,000s of edge clusters requires automation
-2. **Standardization:** Consistent API across all deployment targets
-3. **GitOps-native:** Edge cluster configs live in Git
-4. **Vendor-neutral:** Not locked into proprietary management APIs
-5. **Community:** Leverage CAPI ecosystem and tooling
+**Benefits of CAPI/Metal3 for edge deployments:**
 
-**Alternative approaches and why CAPI wins:**
+1. **Scale:** Managing thousands of edge clusters from a central management cluster
+2. **Automation:** Full automation when hardware management interfaces (BMC) are available
+3. **Declarative:** Kubernetes-native API for infrastructure provisioning and lifecycle management
+4. **GitOps-native:** Edge cluster configurations live in Git repositories
+5. **Vendor-neutral:** Not locked into proprietary management APIs
+6. **Continuous reconciliation:** Prevents configuration drift across the fleet
 
-| Approach | Limitations | CAPI Advantage |
-|----------|-------------|----------------|
-| **Manual kubectl** | Doesn't scale, error-prone | Declarative, automated |
-| **Ansible/scripts** | Imperative, state drift | Continuous reconciliation |
-| **Terraform** | Requires state management | Stateless (K8s is state) |
-| **Cloud-specific** | Vendor lock-in | Provider-agnostic |
+**Key capabilities:**
 
-**Key insight:** SUSE Edge uses CAPI as the "control plane for control planes" - a Kubernetes cluster managing hundreds/thousands of Kubernetes clusters.
+- Automated bare metal server provisioning via BMC (Redfish, IPMI)
+- Consistent cluster deployment across diverse hardware
+- Declarative cluster lifecycle management (create, upgrade, scale, delete)
+- Integration with Rancher for multi-cluster visibility and management
+- Fleet GitOps for configuration management at scale
+
+> **Note:** SUSE Edge also provides alternative provisioning methods (Elemental for phone-home registration, Edge Image Builder for air-gapped deployments) for scenarios where different deployment models are needed. See the SUSE Edge documentation for details on those approaches.
 
 [↑ Back to ToC](#table-of-contents)
 
@@ -4197,8 +4216,10 @@ Complete walkthrough of provisioning a SUSE Edge cluster on bare metal using Met
 **Build SLE Micro image with embedded RKE2:**
 
 ```bash
-# Install edge-image-builder (SUSE tool)
-# https://github.com/suse-edge/edge-image-builder
+# Edge Image Builder (EIB) runs as a container
+# Documentation: https://github.com/suse-edge/edge-image-builder
+# Pull the EIB container image:
+# podman pull registry.suse.com/edge/3.5/edge-image-builder:1.3.2
 
 # Create image definition
 cat > sle-micro-rke2-image.yaml <<EOF
@@ -4234,10 +4255,13 @@ systemd:
 
 EOF
 
-# Build image
-eib build -config sle-micro-rke2-image.yaml -output-dir ./images
+# Build image using EIB container
+podman run --rm -it --privileged \
+  -v $PWD:/eib \
+  registry.suse.com/edge/3.5/edge-image-builder:1.3.2 \
+  build --definition-file sle-micro-rke2-image.yaml
 
-# Image output: ./images/sle-micro-rke2.raw
+# Image output: ./sle-micro-rke2.raw (in current directory)
 # Convert to qcow2 for Metal3
 qemu-img convert -f raw -O qcow2 ./images/sle-micro-rke2.raw ./images/sle-micro-rke2.qcow2
 
@@ -7771,5 +7795,103 @@ spec:
 
 ---
 
-(Due to length constraints, I'll continue with the remaining sections in the next response. The guide now includes sections 1-17. Still need to complete: 18-Practical-Exercises, 19-Common-Mistakes-and-Troubleshooting, 20-Knowledge-Checks-with-Answers, 21-Quick-Reference, and 22-Additional-Resources)
+## Additional-Resources
+
+### Official-SUSE-Edge-Documentation
+
+**SUSE Edge 3.5 Documentation:**
+- Main documentation: https://documentation.suse.com/suse-edge/3.5/single-html/edge/edge.html
+- GitHub Pages: https://suse-edge.github.io/
+
+**CAPI/Metal3 Provisioning:**
+- Metal3 Quickstart: https://documentation.suse.com/suse-edge/3.4/html/edge/quickstart-metal3.html
+- Metal3 Components: https://documentation.suse.com/suse-edge/3.0/html/edge/components-metal3.html
+- Rancher Turtles: https://documentation.suse.com/suse-edge/3.4/html/edge/components-rancher-turtles.html
+- Management Cluster Setup: https://suse-edge.github.io/atip-management-cluster.html
+
+**Other SUSE Edge Provisioning Methods:**
+- Edge Image Builder: https://documentation.suse.com/suse-edge/3.4/html/edge/components-eib.html
+- Elemental (phone-home): https://documentation.suse.com/suse-edge/3.4/html/edge/components-elemental.html
+
+### SUSE-Edge-Repositories
+
+**Edge Image Builder:**
+- Repository: https://github.com/suse-edge/edge-image-builder
+- Container Registry: registry.suse.com/edge/3.5/edge-image-builder:1.3.2
+
+### Cluster-API-Resources
+
+**Official Cluster API:**
+- Project home: https://cluster-api.sigs.k8s.io/
+- GitHub: https://github.com/kubernetes-sigs/cluster-api
+- Book (comprehensive guide): https://cluster-api.sigs.k8s.io/
+
+**CAPI Providers:**
+- CAPRKE2: https://github.com/rancher/cluster-api-provider-rke2
+- Metal3: https://github.com/metal3-io/cluster-api-provider-metal3
+- Provider list: https://cluster-api.sigs.k8s.io/reference/providers.html
+
+### Rancher-Resources
+
+**Rancher and Turtles:**
+- Rancher product docs: https://documentation.suse.com/cloudnative/rancher-manager/latest/
+- Rancher Turtles: https://rancher.github.io/turtles/
+- Rancher CAPI integration: https://documentation.suse.com/cloudnative/rancher-manager/latest/en/integrations/cluster-api/
+
+**Fleet GitOps:**
+- Fleet documentation: https://fleet.rancher.io/
+- Multi-cluster management with Fleet
+
+### Community-Resources
+
+**SUSE Community:**
+- SUSE Edge blog posts: https://www.suse.com/c/tag/suse-edge/
+- Edge computing insights: https://www.suse.com/c/edge-computing-empowering-real-time-data-processing-and-analysis/
+- Retail edge trends: https://www.suse.com/c/the-future-of-edge-computing-in-retail-emerging-trends-and-strategic-insights-for-2026-and-beyond/
+
+**Kubernetes Community:**
+- CNCF Metal3 project: https://metal3.io/
+- Kubernetes SIGs: https://github.com/kubernetes-sigs
+
+### Learning-Paths
+
+**Getting Started with SUSE Edge and Cluster API:**
+
+1. **Start with concepts** (this guide, sections 1-7)
+2. **Understand CAPI/Metal3 provisioning** (this guide focuses on this method)
+3. **Deploy management cluster** (section 9 or SUSE Edge Metal3 quickstart)
+4. **Provision first workload cluster** (section 10 or Metal3 quickstart)
+5. **Implement GitOps workflows** (section 14)
+
+**Advanced Topics:**
+
+- Multi-cluster fleet management with Fleet
+- NeuVector for container security
+- Longhorn for storage
+- Observability with Prometheus/Grafana
+- Custom ClusterClass development
+
+### Support-and-Training
+
+**SUSE Support:**
+- Enterprise support: Available with SUSE Edge subscriptions
+- Support portal: https://www.suse.com/support/
+
+**Training:**
+- SUSE training catalog: https://training.suse.com/
+- Kubernetes certifications: CKA, CKAD, CKS
+
+---
+
+**Document Information:**
+- Guide focuses on CAPI/Metal3 provisioning method for bare metal edge clusters
+- For other SUSE Edge provisioning methods, refer to the SUSE Edge documentation links above
+- Version information current as of February 2026 (SUSE Edge 3.5)
+- This guide is community-contributed and educational in nature
+
+[↑ Back to ToC](#table-of-contents)
+
+---
+
+(Due to length constraints, I'll continue with the remaining sections in the next response. The guide now includes sections 1-17 and 22. Still need to complete: 18-Practical-Exercises, 19-Common-Mistakes-and-Troubleshooting, 20-Knowledge-Checks-with-Answers, and 21-Quick-Reference)
 

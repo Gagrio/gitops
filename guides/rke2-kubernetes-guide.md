@@ -1,4 +1,4 @@
-# RKE2 & Kubernetes Internals - Interview Prep
+# RKE2 & Kubernetes Internals - Learning Guide
 
 **Timeline**: 1-day intensive, hands-on preparation
 **Goal**: Deep understanding of RKE2 architecture, Kubernetes internals, and production troubleshooting
@@ -52,7 +52,7 @@
    - [Storage Issues](#storage-issues)
    - [Node Problems](#node-problems)
    - [Upgrade Failures](#upgrade-failures)
-10. [Interview Questions](#interview-questions)
+10. [Practice Questions](#practice-questions)
 11. [Quick Reference](#quick-reference)
 
 ---
@@ -2759,7 +2759,7 @@ kubectl version -o yaml > versions-pre-upgrade.txt
 
 **Notable Kubernetes Features (1.30-1.35):**
 
-Features relevant to RKE2 operations and interviews:
+Features relevant to RKE2 operations and learning:
 
 | K8s Version | Feature | Status | Impact |
 |-------------|---------|--------|--------|
@@ -4076,7 +4076,7 @@ journalctl -u rke2-server | grep "etcd"
 
 ---
 
-## Interview-Questions
+## Practice-Questions
 
 **RKE2 Architecture:**
 
@@ -4324,15 +4324,3 @@ crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock
 | Can't join node | Token, firewall, server | Verify config, ports, server status |
 
 ---
-
-**Final Tips for Interview:**
-
-1. **Don't just memorize** - understand how components interact
-2. **Think out loud** - explain your troubleshooting thought process
-3. **Ask clarifying questions** - "Is this affecting all pods or just one namespace?"
-4. **Draw diagrams** - visual explanations show deeper understanding
-5. **Mention real-world trade-offs** - "etcd requires fast disks, but SSDs cost more"
-6. **Show operational awareness** - "Before making this change, I'd backup etcd"
-7. **Admit what you don't know** - "I haven't worked with feature X, but here's how I'd learn it"
-
-**Good luck with your interview!** 🚀
