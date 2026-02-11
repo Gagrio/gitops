@@ -1,18 +1,25 @@
 # Kubernetes Cluster API with SUSE Edge: Complete Beginner's Guide
+### Based on SUSE Edge 3.5 — Directed Network Provisioning with CAPI and Metal3
 
 **Version Information:**
-- Cluster API: v1.12 (February 2026)
+- Cluster API: v1.10.x (as bundled with SUSE Edge 3.5)
 - SUSE Edge: 3.5
 - Kubernetes: 1.29-1.35 (workload), 1.31-1.35 (management)
 - RKE2: v1.34.2+rke2r1
 - K3s: v1.34.2+k3s1
-- Metal3: v1.8 (installed via SUSE Edge Helm charts)
-- Rancher Turtles: Installed via SUSE Edge (version varies by release)
+
+> **Note:** SUSE Edge 3.5 ships with RKE2 v1.34.2 and K3s v1.34.2 (Kubernetes v1.34.x). The broader version range listed above reflects upstream CAPI compatibility. For SUSE Edge 3.5 supported versions, refer to the official [SUSE Edge Support Matrix](https://documentation.suse.com/suse-edge/support-matrix/html/support-matrix/index.html).
+- Metal3: v0.13.0 (Helm chart: 305.0.21+up0.13.0, installed via SUSE Edge Helm charts)
+- Baremetal Operator (BMO): v0.11.2
+- Ironic: v32.0.0
+- CAPM3 (Cluster API Provider Metal3): v1.10.4
+- Rancher Turtles: v0.25.1 (Helm chart: 305.0.4+up0.25.1)
+- CAPRKE2 (Cluster API Provider RKE2): v0.21.1
 - Edge Image Builder: 1.3.2
 
 **Last Updated:** February 2026
 
-**Note on versions:** Specific component versions for Metal3 and Rancher Turtles are managed by SUSE Edge releases and installed via Helm charts from registry.suse.com/edge/. Refer to official SUSE Edge 3.5 documentation for exact versions.
+**Note on versions:** SUSE Edge 3.5 ships with the versions listed above. All components are installed via Helm charts from registry.suse.com/edge/. The specific Helm chart versions are shown in parentheses (e.g., 305.0.21+up0.13.0 for Metal3 indicates SUSE Edge chart version 305.0.21 packaging upstream Metal3 v0.13.0). For the latest support matrix, refer to the official [SUSE Edge 3.5 documentation](https://documentation.suse.com/suse-edge/3.5/).
 
 ---
 
@@ -207,9 +214,9 @@ cd ~/capi-workspace
 # Create environment file
 cat > .env <<EOF
 # Cluster API Configuration
-export CAPI_VERSION=v1.12.0
-export RKE2_PROVIDER_VERSION=v0.9.0
-export METAL3_PROVIDER_VERSION=v1.8.0
+export CAPI_VERSION=v1.10.4
+export RKE2_PROVIDER_VERSION=v0.21.1
+export METAL3_PROVIDER_VERSION=v0.13.0
 
 # Management cluster
 export MGMT_CLUSTER_NAME=capi-mgmt
@@ -2411,6 +2418,8 @@ Metal3 provides Kubernetes-native bare metal provisioning for Cluster API. It's 
 
 ### Metal3-Architecture
 
+> **SUSE Edge 3.5 Important:** SUSE Edge 3.5 Metal3 integration **only supports Redfish virtual media** for bare metal provisioning. Traditional PXE boot is **not available** in SUSE Edge 3.5. All bare metal servers must have BMC interfaces that support the Redfish virtual media standard.
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Management Cluster                                          │
@@ -2439,7 +2448,7 @@ Metal3 provides Kubernetes-native bare metal provisioning for Cluster API. It's 
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
                         ↓ BMC Communication
-                        ↓ (Redfish/IPMI)
+                        ↓ (Redfish Virtual Media)
 ┌──────────────────────────────────────────────────────────────┐
 │  Physical Bare Metal Servers                                 │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
@@ -2494,6 +2503,9 @@ spec:
     checksum: http://image-server.metal3.svc/sle-micro-5.5-rke2.qcow2.sha256sum
     checksumType: sha256
     format: qcow2
+    # IMPORTANT: SUSE Edge 3.5 requires the following mandatory kernel argument
+    # for Metal3 image deployment. This must be included in the image configuration.
+    # kernelArguments: ignition.platform.id=openstack
 
   # User data (cloud-init/ignition)
   userData:
@@ -2690,38 +2702,42 @@ status:
 7. Node joins cluster
 8. Metal3Machine status.ready = true
 
+> **SUSE Edge 3.5 Mandatory Requirement:** When preparing OS images for Metal3 deployment in SUSE Edge 3.5, you **must** include the kernel argument `ignition.platform.id=openstack` in the image boot configuration. This is required for proper Metal3 image deployment. Images built without this kernel argument will fail to provision correctly.
+
 ### BMC-Protocols-(Redfish-vs-IPMI)
 
 **BMC (Baseboard Management Controller):** Out-of-band management interface on servers.
 
 #### Redfish-(Modern-Standard)
 
-**Preferred for new hardware.**
+**Preferred for new hardware. REQUIRED for SUSE Edge 3.5.**
+
+> **SUSE Edge 3.5 Requirement:** SUSE Edge 3.5 **only supports Redfish virtual media** for provisioning. Your bare metal servers must have BMCs that support the Redfish virtual media API. Traditional PXE-based provisioning is not available in SUSE Edge 3.5.
 
 **Advantages:**
 - RESTful API (JSON over HTTPS)
 - Standard DMTF specification
 - Secure (TLS, authentication)
-- Rich feature set
+- Rich feature set including virtual media support
 - Good vendor support (Dell iDRAC 9+, HPE iLO 5+, Supermicro X11+)
 
-**BMC address format:**
+**BMC address format for SUSE Edge 3.5:**
 
 ```yaml
 bmc:
-  address: redfish://192.168.1.101/redfish/v1/Systems/1
-  # Or with virtual media:
+  # SUSE Edge 3.5 requires redfish-virtualmedia:// format
   address: redfish-virtualmedia://192.168.1.101/redfish/v1/Systems/1
+  # Standard redfish:// (without virtual media) is NOT supported in SUSE Edge 3.5
 ```
 
-**Example Redfish BMC addresses by vendor:**
+**Example Redfish virtual media BMC addresses by vendor:**
 
 | Vendor | Format |
 |--------|--------|
-| Dell iDRAC | `redfish://idrac-ip/redfish/v1/Systems/System.Embedded.1` |
-| HPE iLO | `redfish://ilo-ip/redfish/v1/Systems/1` |
-| Supermicro | `redfish://bmc-ip/redfish/v1/Systems/1` |
-| Lenovo XClarity | `redfish://xcc-ip/redfish/v1/Systems/1` |
+| Dell iDRAC | `redfish-virtualmedia://idrac-ip/redfish/v1/Systems/System.Embedded.1` |
+| HPE iLO | `redfish-virtualmedia://ilo-ip/redfish/v1/Systems/1` |
+| Supermicro | `redfish-virtualmedia://bmc-ip/redfish/v1/Systems/1` |
+| Lenovo XClarity | `redfish-virtualmedia://xcc-ip/redfish/v1/Systems/1` |
 
 #### IPMI-(Legacy)
 
@@ -2744,6 +2760,8 @@ bmc:
 
 ### Provisioning-Flow-Detailed
 
+> **SUSE Edge 3.5 Note:** The provisioning flow below describes the generic Metal3 process. In SUSE Edge 3.5, steps involving "PXE boot" (steps 3 and 12b) are replaced with **Redfish virtual media** mounting. The BMC mounts ISO images virtually instead of using network PXE boot. This is the only provisioning method supported in SUSE Edge 3.5.
+
 Step-by-step provisioning process:
 
 ```
@@ -2755,6 +2773,7 @@ Step-by-step provisioning process:
 3. BMO triggers Ironic inspection
    - Server powered on via BMC
    - Server PXE boots inspection image (from Ironic DHCP)
+     [SUSE Edge 3.5: Uses Redfish virtual media instead of PXE]
    - Inspection agent collects hardware info
    - Agent sends info to Ironic
    - Server powered off
@@ -2782,6 +2801,7 @@ Step-by-step provisioning process:
 12. BMO triggers Ironic provisioning:
     a. Power on server via BMC
     b. Server PXE boots deploy ramdisk
+       [SUSE Edge 3.5: Uses Redfish virtual media to mount deployment image]
     c. Deploy ramdisk downloads OS image from HTTP server
     d. Deploy ramdisk writes image to disk
     e. Deploy ramdisk injects userData (cloud-init)
@@ -2889,7 +2909,9 @@ spec:
 
 #### Ironic-DHCP-Range-Configuration
 
-Ironic needs a DHCP range for PXE booting during inspection/provisioning. This is separate from the node's final IP.
+> **SUSE Edge 3.5 Note:** While SUSE Edge 3.5 uses Redfish virtual media instead of PXE boot, Ironic still requires DHCP configuration for provisioning network communication during inspection and deployment.
+
+Ironic needs a DHCP range for network access during inspection/provisioning. This is separate from the node's final IP.
 
 **Configure in Metal3 deployment:**
 
@@ -2911,14 +2933,14 @@ data:
 ┌─────────────────────────────────────────────────────────┐
 │ Management Cluster Network                              │
 │ VLAN 10: 192.168.1.0/24 (management/BMC)                │
-│ VLAN 20: 192.168.10.0/24 (provisioning/PXE)             │
+│ VLAN 20: 192.168.10.0/24 (provisioning network)         │
 │                                                         │
 │ ┌─────────────────┐         ┌──────────────────────┐   │
 │ │ Ironic Services │         │ BareMetalHost Nodes  │   │
-│ │ 192.168.10.1    │◀──PXE──▶│ 192.168.10.100-200   │   │
-│ │ DHCP/TFTP       │         │ (during provisioning)│   │
-│ └─────────────────┘         └──────────────────────┘   │
-│                                       ↓                 │
+│ │ 192.168.10.1    │◀──────▶│ 192.168.10.100-200   │   │
+│ │ DHCP/HTTP       │ Virtual │ (during provisioning)│   │
+│ └─────────────────┘  Media  └──────────────────────┘   │
+│                   (SUSE Edge 3.5)       ↓              │
 │                                  After provisioning     │
 │                                       ↓                 │
 │                             ┌──────────────────────┐    │
@@ -4164,24 +4186,29 @@ Complete walkthrough of provisioning a SUSE Edge cluster on bare metal using Met
 
 ### Prerequisites-for-Bare-Metal
 
+> **SUSE Edge 3.5 Important:** SUSE Edge 3.5 requires **Redfish virtual media** for provisioning. PXE boot is not supported. Ensure all servers have BMCs with Redfish virtual media capability.
+
 **Hardware requirements:**
 
 - **Servers:** 3+ physical servers with BMC (iDRAC, iLO, etc.)
-  - Redfish or IPMI support
-  - Network boot (PXE) capability
+  - **Redfish virtual media support (REQUIRED for SUSE Edge 3.5)**
+  - IPMI support (legacy, not recommended for SUSE Edge 3.5)
   - Minimum per server: 2 vCPU, 4GB RAM, 40GB disk
 
 - **Network:**
   - Management network (BMC access)
-  - Provisioning network (PXE boot)
+  - Provisioning network (for virtual media deployment in SUSE Edge 3.5)
   - Production network (cluster traffic)
   - VLANs configured (if using separate networks)
 
 - **Management cluster:**
   - CAPI installed
+  - **MetalLB installed and configured (REQUIRED prerequisite for Metal3)**
   - Metal3 provider installed
   - Network access to BMCs
   - Network access to provisioning network
+
+> **MetalLB Prerequisite:** SUSE Edge 3.5 requires MetalLB to be installed **before** Metal3. An IPAddressPool must be configured for the `metal3-ironic` service. Metal3 installation will fail without MetalLB.
 
 **Network topology:**
 
@@ -4204,6 +4231,7 @@ Complete walkthrough of provisioning a SUSE Edge cluster on bare metal using Met
 │  Provisioning Network (VLAN 20: 192.168.10.0/24)            │
 │  - DHCP range: 192.168.10.100-200                           │
 │  - Used during hardware inspection and OS deployment        │
+│  - SUSE Edge 3.5: Used with Redfish virtual media          │
 │                                                              │
 │  Production Network (VLAN 30: 10.0.0.0/24)                  │
 │  - Final cluster network                                    │
@@ -4253,6 +4281,11 @@ systemd:
   enable:
   - rke2-server.service
 
+# MANDATORY: Add kernel argument required for Metal3 in SUSE Edge 3.5
+grub:
+  kernelArguments:
+  - ignition.platform.id=openstack
+
 EOF
 
 # Build image using EIB container
@@ -4276,6 +4309,8 @@ kubectl cp ./images/sle-micro-rke2.qcow2 \
 # Option 2: Host on separate HTTP server
 # Copy to web server: /var/www/html/images/
 ```
+
+> **Critical:** The kernel argument `ignition.platform.id=openstack` added in the grub configuration above is **mandatory** for Metal3 image deployment in SUSE Edge 3.5. Images built without this kernel argument will fail to provision. This argument must be present in the grub configuration of any image used with Metal3 in SUSE Edge 3.5.
 
 **Image URL will be:**
 ```
@@ -4524,12 +4559,12 @@ kubectl describe baremetalhost server-01 -n metal3
 # Check Ironic logs
 kubectl logs -n baremetal-operator-system deployment/baremetal-operator-controller-manager
 
-# Check if server is PXE booting
+# Check if server is booting (SUSE Edge 3.5: via Redfish virtual media)
 # Physical access: monitor server console during inspection
 # Should see:
 # 1. Power on via BMC
-# 2. PXE boot from DHCP
-# 3. Download inspection image
+# 2. Boot from virtual media (SUSE Edge 3.5) or PXE boot from DHCP (upstream Metal3)
+# 3. Download/mount inspection image
 # 4. Boot inspection image
 # 5. Collect hardware info
 # 6. Send to Ironic
@@ -4537,14 +4572,18 @@ kubectl logs -n baremetal-operator-system deployment/baremetal-operator-controll
 
 # Common issues:
 # - BMC credentials wrong
-# - PXE not enabled in BIOS
-# - DHCP not reaching server
+# - Redfish virtual media not supported by BMC (SUSE Edge 3.5 requirement)
 # - Network connectivity issues
+# - MetalLB not installed (SUSE Edge 3.5 prerequisite)
 ```
 
 ### Step-4-Create-Network-Configuration
 
 **Create static network configurations:**
+
+> **SUSE Edge Tool:** SUSE Edge provides the **NM Configurator** tool for generating static IP network configurations in nmstate format. This official SUSE Edge tool simplifies the creation of network configuration for bare metal hosts. See the [SUSE Edge NM Configurator documentation](https://github.com/suse-edge/nm-configurator) for details.
+
+The network configuration below uses standard netplan (cloud-init) format. For nmstate format configurations, use the NM Configurator tool.
 
 ```yaml
 # network-configs.yaml
@@ -4997,13 +5036,19 @@ kubectl delete secret server-01-bmc-secret -n metal3
 # Check Ironic logs
 kubectl logs -n baremetal-operator-system -l app=ironic -c ironic-inspector
 
-# Common causes:
-# - PXE boot disabled in BIOS
+# Common causes in SUSE Edge 3.5:
+# - Redfish virtual media not supported by BMC (SUSE Edge 3.5 requirement)
+# - BMC credentials incorrect
 # - DHCP not reaching server
 # - Provisioning network misconfigured
+# - MetalLB not installed or not configured
+# - Image missing mandatory kernel argument: ignition.platform.id=openstack
 
 # Verify DHCP range
 kubectl get configmap -n baremetal-operator-system ironic-bmo-configmap -o yaml | grep DHCP_RANGE
+
+# Verify MetalLB is installed (SUSE Edge 3.5 prerequisite)
+kubectl get pods -n metallb-system
 
 # Check if server is receiving DHCP (requires physical access or remote console)
 ```
@@ -7022,15 +7067,16 @@ spec:
 ```
 VLAN 10 (Management)   - CAPI controllers only
 VLAN 20 (BMC)          - BMC access only, no internet
-VLAN 30 (Provisioning) - PXE/DHCP for provisioning
+VLAN 30 (Provisioning) - DHCP/HTTP for provisioning (Redfish virtual media in SUSE Edge 3.5)
 VLAN 40 (Production)   - Workload cluster traffic
 ```
 
 **Firewall rules:**
 
 ```
-Management → BMC:           Allow HTTPS (443) to BMC IPs
-Management → Provisioning:  Allow DHCP (67/68), TFTP (69), HTTP (80)
+Management → BMC:           Allow HTTPS (443) to BMC IPs (Redfish)
+Management → Provisioning:  Allow DHCP (67/68), HTTP (80)
+                            (Note: TFTP not required in SUSE Edge 3.5 with virtual media)
 BMC → Internet:             Deny all
 Provisioning → Internet:    Deny all
 Production → Internet:      Allow (with proxy/NAT)
