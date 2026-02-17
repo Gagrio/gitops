@@ -6,6 +6,8 @@
 
 ---
 
+<a id="table-of-contents"></a>
+
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
