@@ -55,6 +55,8 @@
 10. [Practice Questions](#practice-questions)
 11. [Quick Reference](#quick-reference)
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Prerequisites
@@ -92,11 +94,15 @@ command -v etcdctl && echo "✓ etcdctl (optional)" || echo "✗ etcdctl not ins
 - Troubleshooting Guide: 1.5 hours
 - **Total: ~10 hours**
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## RKE2-Architecture
 
 **Time: 1.5 hours**
+
+[↑ Back to top](#table-of-contents)
 
 ### Why-RKE2
 
@@ -121,6 +127,8 @@ RKE2 is Rancher's next-generation Kubernetes distribution, designed for security
 - Air-gapped environments
 - Organizations needing security-by-default
 - Simplified operations compared to managing individual K8s components
+
+[↑ Back to top](#table-of-contents)
 
 ### Architecture-Overview
 
@@ -192,6 +200,8 @@ RKE2 is Rancher's next-generation Kubernetes distribution, designed for security
    - CoreDNS
    - Metrics-server
    - Located in `/var/lib/rancher/rke2/agent/pod-manifests/`
+
+[↑ Back to top](#table-of-contents)
 
 ### Installation-Configuration
 
@@ -341,6 +351,8 @@ journalctl -u rke2-agent                    # Agent logs
 /var/lib/rancher/rke2/agent/etc/cni/net.d/ # RKE2-managed CNI config
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### systemd-Service-Model
 
 **Understanding rke2-server.service:**
@@ -472,11 +484,15 @@ kubectl get endpoints -n kube-system
 5. How do you add a new server to an existing HA cluster?
    > **A:** Install rke2-server, create `/etc/rancher/rke2/config.yaml` with `server: https://<existing-server>:9345` and the cluster token, then start the service. It joins the etcd cluster automatically.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Kubernetes-Control-Plane-Internals
 
 **Time: 2 hours**
+
+[↑ Back to top](#table-of-contents)
 
 ### API-Server-Deep-Dive
 
@@ -575,6 +591,8 @@ kubectl get --raw='/metrics' | grep apiserver
 # Watch API server logs
 journalctl -u rke2-server | grep apiserver
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Request-Flow-Through-the-System
 
@@ -704,6 +722,8 @@ for event := range watcher.ResultChan() {
 # - Scalable (API server fans out to many watchers)
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### etcd-Operations
 
 **What is etcd?**
@@ -823,6 +843,8 @@ etcdctl endpoint status -w table
 # Automate compaction (RKE2 does this automatically)
 # API server flag: --etcd-compaction-interval=5m (default)
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Scheduler-Internals
 
@@ -977,6 +999,8 @@ spec:
         memory: 256Mi
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Controller-Manager
 
 **What is the Controller Manager?**
@@ -1117,11 +1141,15 @@ kubectl get events -A | grep Node
 5. What happens if a node becomes unreachable? (Trace through the components)
    > **A:** Kubelet stops sending heartbeats → node controller marks node NotReady after grace period → pod eviction controller waits (default 5min) → pods marked for deletion → scheduler places them on healthy nodes → new kubelets start replacement pods.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## CRDs-Controllers
 
 **Time: 1 hour**
+
+[↑ Back to top](#table-of-contents)
 
 ### Custom-Resource-Definitions
 
@@ -1231,6 +1259,8 @@ kubectl get backups --watch
 # The CRD is just data at this point - no logic!
 # You need a controller to act on it
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Controller-Pattern
 
@@ -1348,6 +1378,8 @@ kubectl get <resource> -o yaml | grep -A 5 finalizers
 # Fix: kubectl patch <resource> -p '{"metadata":{"finalizers":[]}}' --type=merge
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Operator-Pattern
 
 **What is an Operator?**
@@ -1427,6 +1459,8 @@ kubectl describe certificate example-com-tls
 kubectl get secret example-com-tls
 kubectl describe secret example-com-tls
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### CRD-Versioning-Backward-Compatibility
 
@@ -1636,11 +1670,15 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 8. Can you serve multiple API versions simultaneously?
    > **A:** Yes, set `served: true` for multiple versions. Only one can have `storage: true` (the canonical version in etcd), and the API server handles conversion between versions.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Rancher-APIs-Extensions
 
 **Time: 45 minutes**
+
+[↑ Back to top](#table-of-contents)
 
 ### Rancher-Architecture-Overview
 
@@ -1682,6 +1720,8 @@ kubectl get volumes.longhorn.io.v1beta1 -n longhorn-system  # Still works
 │  agent      │ │  agent      │ │  agent      │
 └─────────────┘ └─────────────┘ └─────────────┘
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Rancher-API-Structure
 
@@ -1745,6 +1785,8 @@ spec:
       limitsMemory: "2Gi"
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Rancher-Extensions
 
 **1. Custom Catalogs (Helm Charts):**
@@ -1798,6 +1840,8 @@ spec:
   url: https://github.com/example/docker-machine-driver-custom/releases/download/v1.0.0/driver.tar.gz
   checksum: abc123...
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Working-with-Rancher-API
 
@@ -1889,11 +1933,15 @@ clusters = client.list_clusters()
 4. How would you automate cluster provisioning via Rancher API?
    > **A:** Create a Cluster resource YAML with `apiVersion: provisioning.cattle.io/v1` specifying kubernetesVersion, rkeConfig, and machine pools, then apply it via `kubectl apply` or POST to Rancher's REST API endpoint.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## CNI-Networking
 
 **Time: 1 hour**
+
+[↑ Back to top](#table-of-contents)
 
 ### CNI-Fundamentals
 
@@ -1945,6 +1993,8 @@ ls -la /var/lib/rancher/rke2/agent/etc/cni/net.d/
 # Example CNI config
 cat /var/lib/rancher/rke2/agent/etc/cni/net.d/10-canal.conflist
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Canal-Calico-Flannel
 
@@ -2044,6 +2094,8 @@ cat /run/flannel/subnet.env
 # FLANNEL_SUBNET=10.42.0.1/24
 # FLANNEL_MTU=1450
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Network-Policies
 
@@ -2218,11 +2270,15 @@ kubectl get networkpolicies --all-namespaces
 5. How would you troubleshoot a pod that can't reach another pod?
    > **A:** Verify both pods are running, test connectivity (ping/curl), check network policies for denials, verify Canal/CNI pods are healthy, check node routing tables, test node-to-node connectivity, and examine CNI logs.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## CSI-Storage-Longhorn
 
 **Time: 1 hour**
+
+[↑ Back to top](#table-of-contents)
 
 ### CSI-Architecture
 
@@ -2286,6 +2342,8 @@ Container Storage Interface - standard for exposing storage systems to container
    ↓
 9. DELETE: CSI controller deletes volume (if reclaimPolicy: Delete)
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Longhorn-Deep-Dive
 
@@ -2464,6 +2522,8 @@ kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
 # - Backups (view, restore)
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Backup-and-Restore
 
 **Snapshots (Local):**
@@ -2567,11 +2627,15 @@ kubectl logs -n longhorn-system <longhorn-manager-pod> | grep backup
 5. How would you migrate volumes from one cluster to another?
    > **A:** Create Longhorn backups to S3, configure the new cluster's Longhorn with the same S3 backup target, restore the backups in the new cluster to create volumes with the data, then attach to pods.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Cluster-Lifecycle
 
 **Time: 45 minutes**
+
+[↑ Back to top](#table-of-contents)
 
 ### Version-Compatibility-Upgrade-Paths
 
@@ -2777,6 +2841,8 @@ Features relevant to RKE2 operations and learning:
 
 **Key takeaway**: K8s 1.33 is a landmark release (sidecar containers, nftables, EndpointSlices migration). K8s 1.35 brings in-place pod resize GA which changes how vertical scaling works.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 **Longhorn Upgrade Strategy:**
@@ -2836,6 +2902,8 @@ If your control plane is v1.34, you can have:
 
 5. Name three things you must do before upgrading a production cluster.
    > **A:** Take an etcd snapshot backup, test the upgrade in staging environment, and review release notes for API deprecations and breaking changes.
+
+[↑ Back to top](#table-of-contents)
 
 ### Upgrades
 
@@ -2943,6 +3011,8 @@ kubectl logs -n system-upgrade -l upgrade.cattle.io/plan=server-plan
 6. Upgrade one minor version at a time (1.32 → 1.33 → 1.34, not 1.32 → 1.34)
 7. **Before upgrading to v1.34+**: Verify etcd is on v3.5.26 (see etcd 3.6 migration warning above)
 
+[↑ Back to top](#table-of-contents)
+
 ### Backup-Disaster-Recovery
 
 **etcd Snapshots:**
@@ -3035,6 +3105,8 @@ kubectl get configmap --all-namespaces -o yaml > configmaps-backup.yaml
 # (backs up etcd + PVs + manifests)
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Certificate-Management
 
 **RKE2 Certificates:**
@@ -3095,6 +3167,8 @@ systemctl start rke2-server
 5. What's the recommended etcd snapshot retention period?
    > **A:** Keep at least 5-7 snapshots (configurable via `etcd-snapshot-retention`), with daily snapshots retained for 7-14 days depending on RPO requirements and storage capacity.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Troubleshooting-Guide
@@ -3102,6 +3176,8 @@ systemctl start rke2-server
 **Time: 1.5 hours**
 
 This is the most important section for a support engineer role. Focus on systematic diagnosis and root cause analysis.
+
+[↑ Back to top](#table-of-contents)
 
 ### Systematic-Debugging-Approach
 
@@ -3174,6 +3250,8 @@ journalctl -u rke2-server -f
 journalctl -u rke2-agent -f
 journalctl -u rke2-server --since "10 minutes ago"
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Advanced-Debugging-Tools-Best-Practices
 
@@ -3465,6 +3543,8 @@ kubectl get <resource> -o jsonpath='{.items[?(@.metadata.deletionTimestamp)].met
    kubectl get all -n <namespace>
    ```
 
+[↑ Back to top](#table-of-contents)
+
 ### RKE2-Specific-Issues
 
 **Issue: rke2-server won't start**
@@ -3579,6 +3659,8 @@ journalctl -u rke2-agent | grep -i "certificate"
 timedatectl status
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### etcd-Troubleshooting
 
 **Issue: etcd cluster unhealthy**
@@ -3692,6 +3774,8 @@ kubectl get nodes
 etcdctl member list
 etcdctl endpoint health --cluster
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Networking-Issues
 
@@ -3813,6 +3897,8 @@ nslookup kubernetes.default.svc.cluster.local 10.43.0.10
 kubectl rollout restart deployment -n kube-system coredns
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Storage-Issues
 
 **Issue: Pod stuck in ContainerCreating (volume mount issue)**
@@ -3924,6 +4010,8 @@ kubectl get sc <storage-class> -o yaml | grep volumeBindingMode
 # Fix: Create pod to trigger binding
 ```
 
+[↑ Back to top](#table-of-contents)
+
 ### Node-Problems
 
 **Issue: Node out of resources**
@@ -3994,6 +4082,8 @@ spec:
     operator: "Exists"
     effect: "NoSchedule"
 ```
+
+[↑ Back to top](#table-of-contents)
 
 ### Upgrade-Failures
 
@@ -4073,6 +4163,8 @@ journalctl -u rke2-server | grep "etcd"
 
 5. What steps would you take for a complete cluster failure (all control planes down)?
    > **A:** Restore from etcd snapshot on first server with `--cluster-reset`, verify it starts successfully, remove etcd data on remaining servers (`/var/lib/rancher/rke2/server/db/`), restart them to rejoin the cluster, verify all nodes healthy.
+
+[↑ Back to top](#table-of-contents)
 
 ---
 
@@ -4216,6 +4308,8 @@ journalctl -u rke2-server | grep "etcd"
 40. **Q: How would you troubleshoot slow API responses?**
     - A: Check etcd performance (`etcdctl check perf`), disk I/O, etcd database size, API server logs, resource utilization (CPU/memory), network latency, watch stream count, large list operations.
 
+[↑ Back to top](#table-of-contents)
+
 ---
 
 ## Quick-Reference
@@ -4322,5 +4416,7 @@ crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock
 | API slow | etcd performance, disk | `etcdctl check perf`, defrag |
 | DNS failing | CoreDNS down | Restart CoreDNS deployment |
 | Can't join node | Token, firewall, server | Verify config, ports, server status |
+
+[↑ Back to top](#table-of-contents)
 
 ---
